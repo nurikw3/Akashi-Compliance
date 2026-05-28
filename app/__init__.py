@@ -1,0 +1,1 @@
+"""Akashi Compliance FastAPI application."""

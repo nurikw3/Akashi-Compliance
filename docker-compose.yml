@@ -1,0 +1,42 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    command: uv run python main.py
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      TASK_QUEUE_ENABLED: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./generated-pdfs:/app/generated-pdfs
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: uv run akashicompliance-worker
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      TASK_QUEUE_ENABLED: "true"
+    volumes:
+      - ./data:/app/data
+      - ./generated-pdfs:/app/generated-pdfs
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 1
