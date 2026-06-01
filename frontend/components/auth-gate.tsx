@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Loader2, Lock } from 'lucide-react'
 import { checkHealth } from '@/lib/api'
-import { clearAuth, isAuthenticated, setAuth } from '@/lib/auth'
+import { clearAuth, isAuthenticated, setAuth, tryAuthFromHash } from '@/lib/auth'
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false)
@@ -32,6 +32,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
+    if (tryAuthFromHash()) {
+      void verifySession()
+      return
+    }
     void verifySession()
   }, [verifySession])
 

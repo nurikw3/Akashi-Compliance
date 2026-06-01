@@ -610,10 +610,14 @@ interface NodePopupProps {
 function NodePopup({ node, position, onClose, onViewFull, onCheckLseg }: NodePopupProps) {
   const canLookup =
     (node.type === 'company' || node.type === 'main') && isCompanyBin(node.iinBin)
-  const canShowReport = canLookup && (node.type === 'main' || node.hasReport)
   const isForeign = isForeignEntity(node)
-  const buttonEnabled = isForeign || canShowReport
+  const buttonEnabled = isForeign || canLookup
   const handlePrimaryAction = isForeign ? onCheckLseg : onViewFull
+  const primaryLabel = isForeign
+    ? 'Проверить в LSEG'
+    : node.hasReport
+      ? 'Полное заключение'
+      : 'Загрузить заключение'
 
   return (
     <div
@@ -661,11 +665,11 @@ function NodePopup({ node, position, onClose, onViewFull, onCheckLseg }: NodePop
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-neutral-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg"
           >
             <ExternalLink className="w-4 h-4" />
-            {isForeign ? 'Проверить в LSEG' : 'Полное заключение'}
+            {primaryLabel}
           </button>
-          {!buttonEnabled && canLookup && (
+          {canLookup && !node.hasReport && !isForeign && (
             <p className="text-xs text-neutral-400 mt-2 text-center">
-              Нет кэша — дождитесь дерева или нажмите «Перестроить»
+              Данные по узлу ещё не в кэше — откроется окно, можно запустить проверку Adata
             </p>
           )}
           {isForeign && (
@@ -741,7 +745,7 @@ function FullReportModal({
       const created = await lookupCompany(
         report?.name || node.name,
         node.iinBin,
-        false,
+        !report,
         caseId,
       )
       const targetId = created.id || report?.openCaseId
@@ -781,7 +785,21 @@ function FullReportModal({
             <LoadingGif message="Загрузка из сохранённых данных…" size={120} className="py-8" />
           )}
           {error && (
-            <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg p-4">{error}</p>
+            <div className="space-y-3">
+              <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg p-4">
+                {error}
+              </p>
+              {node.iinBin && isCompanyBin(node.iinBin) && (
+                <button
+                  type="button"
+                  onClick={handleOpenCase}
+                  disabled={opening}
+                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg"
+                >
+                  {opening ? 'Запуск проверки…' : 'Запустить проверку Adata'}
+                </button>
+              )}
+            </div>
           )}
           {report && !loading && (
             <>
