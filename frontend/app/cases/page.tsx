@@ -5,19 +5,19 @@ import { CasesList } from '@/components/cases-list'
 export default function CasesPage() {
   return (
     <div>
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold text-neutral-900 mb-2">Дела</h1>
-          <p className="text-neutral-500">
-            Контрагенты сгруппированы по графу связей — связанные компании под главным узлом
+          <h1 className="text-2xl font-bold text-neutral-900 mb-1">Контрагенты</h1>
+          <p className="text-sm text-neutral-500">
+            Сгруппированы по графу связей — связанные компании под главным узлом
           </p>
         </div>
         <Link
           href="/"
-          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
         >
           <Plus className="w-4 h-4" />
-          Загрузить файл
+          Добавить
         </Link>
       </div>
       <CasesList />

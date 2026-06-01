@@ -9,7 +9,7 @@ export function Header() {
 
   const links = [
     { href: '/', label: 'Загрузка', icon: Upload },
-    { href: '/cases', label: 'Дела', icon: FolderOpen },
+    { href: '/cases', label: 'Контрагенты', icon: FolderOpen },
   ]
 
   return (

@@ -1,29 +1,26 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
+import psycopg
+from psycopg.rows import dict_row
+
 from app.core.config import settings
 
 
 def ensure_storage() -> None:
-    settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     settings.pdf_dir.mkdir(parents=True, exist_ok=True)
 
 
 @contextmanager
-def get_connection() -> Iterator[sqlite3.Connection]:
+def get_connection() -> Iterator[psycopg.Connection[dict[str, Any]]]:
     ensure_storage()
-    connection = sqlite3.connect(settings.sqlite_path)
-    connection.row_factory = sqlite3.Row
-    try:
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as connection:
         yield connection
-    finally:
-        connection.close()
 
 
 def init_db() -> None:
@@ -31,7 +28,7 @@ def init_db() -> None:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS audits (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 audit_hash TEXT NOT NULL UNIQUE,
                 organization_name TEXT NOT NULL,
                 bin TEXT NOT NULL,
@@ -59,7 +56,8 @@ def init_db() -> None:
                 enriched_data TEXT,
                 sources TEXT DEFAULT '[]',
                 conclusion TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                parent_case_id TEXT REFERENCES cases(id) ON DELETE SET NULL
             )
             """
         )
@@ -67,12 +65,11 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL,
+                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
                 filename TEXT NOT NULL,
                 file_type TEXT NOT NULL,
                 analysis TEXT,
-                uploaded_at TEXT NOT NULL,
-                FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE
+                uploaded_at TEXT NOT NULL
             )
             """
         )
@@ -80,30 +77,14 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id TEXT PRIMARY KEY,
-                case_id TEXT NOT NULL,
+                case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE
+                created_at TEXT NOT NULL
             )
             """
         )
-        _migrate_cases_columns(connection)
         connection.commit()
-
-
-def _migrate_cases_columns(connection: sqlite3.Connection) -> None:
-    columns = {
-        row[1] for row in connection.execute("PRAGMA table_info(cases)").fetchall()
-    }
-    if "parent_case_id" not in columns:
-        connection.execute(
-            """
-            ALTER TABLE cases
-            ADD COLUMN parent_case_id TEXT
-            REFERENCES cases(id) ON DELETE SET NULL
-            """
-        )
 
 
 def _now_iso() -> str:
@@ -122,7 +103,7 @@ def create_case(
         connection.execute(
             """
             INSERT INTO cases (id, company_name, iin, status, created_at, parent_case_id)
-            VALUES (?, ?, ?, 'pending', ?, ?)
+            VALUES (%s, %s, %s, 'pending', %s, %s)
             """,
             (case_id, company_name, iin, created_at, parent_case_id),
         )
@@ -152,7 +133,7 @@ def find_case_by_iin(iin: str) -> dict[str, Any] | None:
             SELECT id, company_name, iin, status, risk_level, enriched_data,
                    sources, conclusion, created_at, parent_case_id
             FROM cases
-            WHERE iin = ?
+            WHERE iin = %s
             ORDER BY
                 CASE status WHEN 'ready' THEN 0 WHEN 'enriching' THEN 1 ELSE 2 END,
                 created_at DESC
@@ -172,7 +153,7 @@ def get_case(case_id: str) -> dict[str, Any] | None:
             SELECT id, company_name, iin, status, risk_level, enriched_data,
                    sources, conclusion, created_at, parent_case_id
             FROM cases
-            WHERE id = ?
+            WHERE id = %s
             """,
             (case_id,),
         ).fetchone()
@@ -199,20 +180,20 @@ def update_case(case_id: str, **fields: Any) -> None:
             continue
         if key in ("enriched_data", "sources") and value is not None:
             value = json.dumps(value, ensure_ascii=False)
-        updates.append(f"{key} = ?")
+        updates.append(f"{key} = %s")
         values.append(value)
     if not updates:
         return
     values.append(case_id)
     with get_connection() as connection:
         connection.execute(
-            f"UPDATE cases SET {', '.join(updates)} WHERE id = ?",
+            f"UPDATE cases SET {', '.join(updates)} WHERE id = %s",
             values,
         )
         connection.commit()
 
 
-def _deserialize_case(row: sqlite3.Row) -> dict[str, Any]:
+def _deserialize_case(row: dict[str, Any]) -> dict[str, Any]:
     payload = dict(row)
     enriched = payload.get("enriched_data")
     if isinstance(enriched, str) and enriched:
@@ -231,7 +212,7 @@ def list_documents(case_id: str) -> list[dict[str, Any]]:
             """
             SELECT id, case_id, filename, file_type, analysis, uploaded_at
             FROM documents
-            WHERE case_id = ?
+            WHERE case_id = %s
             ORDER BY uploaded_at DESC
             """,
             (case_id,),
@@ -252,7 +233,7 @@ def add_document(
         connection.execute(
             """
             INSERT INTO documents (id, case_id, filename, file_type, analysis, uploaded_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (doc_id, case_id, filename, file_type, analysis, uploaded_at),
         )
@@ -273,7 +254,7 @@ def list_chat_messages(case_id: str) -> list[dict[str, Any]]:
             """
             SELECT id, case_id, role, content, created_at
             FROM chat_messages
-            WHERE case_id = ?
+            WHERE case_id = %s
             ORDER BY created_at ASC
             """,
             (case_id,),
@@ -288,7 +269,7 @@ def add_chat_message(*, case_id: str, role: str, content: str) -> dict[str, Any]
         connection.execute(
             """
             INSERT INTO chat_messages (id, case_id, role, content, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
             """,
             (message_id, case_id, role, content, created_at),
         )
@@ -305,7 +286,7 @@ def add_chat_message(*, case_id: str, role: str, content: str) -> dict[str, Any]
 # --- Legacy audits (Streamlit) ---
 
 
-def _deserialize_audit(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _deserialize_audit(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
         return None
     payload = dict(row)
@@ -319,7 +300,7 @@ def get_audit_by_hash(audit_hash: str) -> dict[str, Any] | None:
             """
             SELECT id, audit_hash, organization_name, bin, checked_at, status, raw_json, pdf_path
             FROM audits
-            WHERE audit_hash = ?
+            WHERE audit_hash = %s
             """,
             (audit_hash,),
         ).fetchone()
@@ -332,7 +313,7 @@ def get_audit_by_id(audit_id: int) -> dict[str, Any] | None:
             """
             SELECT id, audit_hash, organization_name, bin, checked_at, status, raw_json, pdf_path
             FROM audits
-            WHERE id = ?
+            WHERE id = %s
             """,
             (audit_id,),
         ).fetchone()
@@ -346,7 +327,7 @@ def list_audits(limit: int = 100) -> list[dict[str, Any]]:
             SELECT id, checked_at, organization_name, bin, status, pdf_path
             FROM audits
             ORDER BY checked_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -365,10 +346,11 @@ def save_audit(
 ) -> dict[str, Any]:
     serialized = json.dumps(raw_result, ensure_ascii=False)
     with get_connection() as connection:
-        cursor = connection.execute(
+        row = connection.execute(
             """
             INSERT INTO audits (audit_hash, organization_name, bin, checked_at, status, raw_json, pdf_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
             """,
             (
                 audit_hash,
@@ -379,9 +361,11 @@ def save_audit(
                 serialized,
                 pdf_path,
             ),
-        )
+        ).fetchone()
         connection.commit()
-        audit_id = int(cursor.lastrowid)
+        if row is None:
+            raise RuntimeError("Audit insert did not return id")
+        audit_id = int(row["id"])
     saved = get_audit_by_id(audit_id)
     if saved is None:
         raise RuntimeError("Audit saved but not found")
@@ -391,7 +375,7 @@ def save_audit(
 def update_pdf_path(audit_id: int, pdf_path: str) -> None:
     with get_connection() as connection:
         connection.execute(
-            "UPDATE audits SET pdf_path = ? WHERE id = ?",
+            "UPDATE audits SET pdf_path = %s WHERE id = %s",
             (pdf_path, audit_id),
         )
         connection.commit()

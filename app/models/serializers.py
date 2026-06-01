@@ -48,4 +48,7 @@ def case_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "dataSources": data_sources,
         "affiliateTree": enriched.get("affiliateTree"),
         "parentCaseId": row.get("parent_case_id"),
+        "lseg": enriched.get("lseg"),
+        "scoreBreakdown": enriched.get("scoreBreakdown"),
+        "totalScore": enriched.get("totalScore"),
     }

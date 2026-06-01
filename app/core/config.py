@@ -51,9 +51,17 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    lseg_client_id: str = os.getenv("LSEG_CLIENT_ID", "")
+    lseg_client_secret: str = os.getenv("LSEG_CLIENT_SECRET", "")
+    lseg_group_id: str = os.getenv("LSEG_GROUP_ID", "")
     use_stub_on_api_failure: bool = os.getenv(
         "USE_STUB_ON_API_FAILURE", "true"
     ).lower() in ("1", "true", "yes")
+    database_url: str = os.getenv(
+        "DATABASE_URL",
+        "postgresql://akashicompliance:akashicompliance@127.0.0.1:5432/akashicompliance",
+    )
     sqlite_path: Path = BASE_DIR / os.getenv("SQLITE_PATH", "data/compliance.db")
     pdf_dir: Path = BASE_DIR / os.getenv("PDF_DIR", "generated-pdfs")
     api_base_url: str = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")

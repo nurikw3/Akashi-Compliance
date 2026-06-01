@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import Link from 'next/link'
 import {
   Building2,
   Gavel,
@@ -14,15 +15,18 @@ import {
   Loader2,
   Network,
   Download,
+  ShieldCheck,
+  TrendingUp,
+  Globe,
 } from 'lucide-react'
-import { downloadCaseReport, fetchAiStatus } from '@/lib/api'
+import { downloadCaseReport, fetchAiStatus, rescreenAllWithLseg } from '@/lib/api'
 import { useCases } from '@/lib/cases-context'
 import { AffiliatesGraph } from '@/components/affiliates-graph'
 import { MarkdownContent } from '@/components/markdown-content'
 import { dataSourceLabel, sectionSource } from '@/lib/data-source-label'
-import type { Case, DataSourceKind } from '@/lib/types'
+import type { Case, DataSourceKind, ScoreMetric, LsegData } from '@/lib/types'
 
-type Tab = 'data' | 'documents' | 'assessment' | 'chat'
+type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'scoring' | 'lseg'
 
 function SectionHeading({
   icon: Icon,
@@ -658,6 +662,260 @@ function ChatTab({ caseData }: { caseData: Case }) {
   )
 }
 
+// ── Scoring Tab ───────────────────────────────────────────────────────────────
+
+const METRIC_LABELS: Record<string, string> = {
+  sanctions: 'Международные санкции',
+  courts: 'Судебная активность',
+  taxes: 'Налоговый комплаенс',
+  legal_status: 'Правовой статус',
+  pep: 'PEP-скрининг физлиц',
+  adverse_media: 'Негативные публикации',
+  affiliate_risk: 'Риск аффилиатов',
+}
+
+const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
+  lseg: { label: 'LSEG WC1', cls: 'bg-purple-100 text-purple-700' },
+  adata: { label: 'Adata', cls: 'bg-blue-100 text-blue-700' },
+  affiliate_tree: { label: 'Аффилиаты', cls: 'bg-emerald-100 text-emerald-700' },
+  none: { label: 'Нет данных', cls: 'bg-neutral-100 text-neutral-500' },
+}
+
+function ScoringTab({ caseData }: { caseData: Case }) {
+  const breakdown: ScoreMetric[] = caseData.scoreBreakdown || []
+  const totalScore = caseData.totalScore ?? null
+  const lsegAt = caseData.lseg?.screenedAt
+
+  if (breakdown.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-neutral-200 p-8 text-center">
+        <TrendingUp className="w-10 h-10 text-neutral-300 mx-auto mb-3" />
+        <p className="text-neutral-500 mb-2">Скоринг ещё не рассчитан</p>
+        <p className="text-sm text-neutral-400">Дождитесь статуса «готово» или обновите проверку.</p>
+      </div>
+    )
+  }
+
+  const riskColor =
+    caseData.riskLevel === 'high'
+      ? 'text-red-600 bg-red-50 border-red-200'
+      : caseData.riskLevel === 'medium'
+        ? 'text-amber-600 bg-amber-50 border-amber-200'
+        : 'text-emerald-600 bg-emerald-50 border-emerald-200'
+
+  return (
+    <div className="space-y-4">
+      {/* Total score card */}
+      <div className={`rounded-xl border p-5 ${riskColor}`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium opacity-70">Итоговый скоринг</p>
+            <p className="text-4xl font-bold mt-1">
+              {totalScore !== null ? totalScore.toFixed(1) : '—'}
+              <span className="text-lg font-normal opacity-60"> / 100</span>
+            </p>
+          </div>
+          <div className="text-right text-sm opacity-70">
+            <p>Уровень риска</p>
+            <p className="text-lg font-semibold capitalize mt-0.5">
+              {caseData.riskLevel === 'high' ? 'Высокий' : caseData.riskLevel === 'medium' ? 'Средний' : 'Низкий'}
+            </p>
+          </div>
+        </div>
+        {lsegAt && (
+          <p className="text-xs opacity-60 mt-3">
+            LSEG WC1 скрининг: {new Date(lsegAt).toLocaleString('ru-RU')}
+          </p>
+        )}
+      </div>
+
+      {/* Metric breakdown */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-5 space-y-4">
+        <h3 className="font-semibold text-neutral-900">Разбивка по метрикам</h3>
+        {breakdown.map((m) => {
+          const pct = m.max_points > 0 ? (m.points / m.max_points) * 100 : 0
+          const barColor =
+            pct >= 70
+              ? 'bg-red-500'
+              : pct >= 35
+                ? 'bg-amber-500'
+                : 'bg-emerald-500'
+          const badge = SOURCE_BADGE[m.source] || SOURCE_BADGE.none
+          return (
+            <div key={m.metric}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-neutral-800">
+                    {METRIC_LABELS[m.metric] || m.metric}
+                  </span>
+                  <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>
+                    {badge.label}
+                  </span>
+                </div>
+                <span className="text-sm text-neutral-500">
+                  {m.points.toFixed(1)} / {m.max_points}
+                </span>
+              </div>
+              <div className="h-2 bg-neutral-100 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${barColor}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <p className="text-xs text-neutral-500 mt-1">{m.reason}</p>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── LSEG Tab ──────────────────────────────────────────────────────────────────
+
+function LsegTab({ caseData }: { caseData: Case }) {
+  const lseg: LsegData | null | undefined = caseData.lseg
+
+  if (!lseg) {
+    return (
+      <div className="bg-white rounded-xl border border-neutral-200 p-8 text-center">
+        <Globe className="w-10 h-10 text-neutral-300 mx-auto mb-3" />
+        <p className="text-neutral-500 mb-2">LSEG World-Check One не запущен</p>
+        <p className="text-sm text-neutral-400">
+          Убедитесь, что LSEG_CLIENT_ID, LSEG_CLIENT_SECRET и LSEG_GROUP_ID настроены.
+          Затем запустите повторную проверку.
+        </p>
+      </div>
+    )
+  }
+
+  const riskBadge = (risk: string) => {
+    if (risk === 'HIGH') return 'bg-red-100 text-red-700 border border-red-200'
+    if (risk === 'MEDIUM') return 'bg-amber-100 text-amber-700 border border-amber-200'
+    return 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Meta */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <ShieldCheck className="w-5 h-5 text-purple-600" />
+          <h3 className="font-semibold text-neutral-900">LSEG World-Check One</h3>
+        </div>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <p className="text-neutral-500">Дата скрининга</p>
+            <p className="font-medium">{new Date(lseg.screenedAt).toLocaleString('ru-RU')}</p>
+          </div>
+          <div>
+            <p className="text-neutral-500">Рейтинг WC1</p>
+            <p className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${riskBadge(lseg.wc1Rating)}`}>
+              {lseg.wc1Rating || 'N/A'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Sanctions */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-neutral-900">Санкционные списки</h3>
+          <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${lseg.sanctions.isOnList ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+            {lseg.sanctions.isOnList ? 'СОВПАДЕНИЕ' : 'Чисто'}
+          </span>
+        </div>
+        {lseg.sanctions.isOnList ? (
+          <div className="space-y-3">
+            {lseg.sanctions.matchedLists.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {lseg.sanctions.matchedLists.map((list) => (
+                  <span key={list} className="px-2 py-0.5 bg-red-50 border border-red-200 rounded text-xs text-red-700 font-medium">
+                    {list}
+                  </span>
+                ))}
+              </div>
+            )}
+            {lseg.sanctions.hits.map((hit, i) => (
+              <div key={i} className="text-sm text-neutral-700 bg-red-50 border border-red-100 rounded-lg p-3">
+                <p className="font-medium">{hit.primaryName}</p>
+                <p className="text-xs text-neutral-500 mt-0.5">{hit.sources.join(' · ')}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-neutral-500">Совпадений в санкционных списках не обнаружено.</p>
+        )}
+      </div>
+
+      {/* PEP */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-neutral-900">PEP-скрининг (физические лица)</h3>
+          <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${lseg.pep.isHit ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+            {lseg.pep.isHit ? 'СОВПАДЕНИЕ' : 'Чисто'}
+          </span>
+        </div>
+        {lseg.pep.isHit ? (
+          lseg.pep.individuals.map((ind, i) => (
+            <div key={i} className="text-sm text-neutral-700 bg-amber-50 border border-amber-100 rounded-lg p-3 mb-2">
+              <p className="font-medium">{ind.primaryName}</p>
+              <p className="text-xs text-neutral-500 mt-0.5">{ind.categories.join(', ')}</p>
+            </div>
+          ))
+        ) : (
+          <p className="text-sm text-neutral-500">Связей с политически значимыми лицами не обнаружено.</p>
+        )}
+      </div>
+
+      {/* Adverse Media */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-neutral-900">Adverse Media</h3>
+          {lseg.adverseMedia.negativeCount > 0 && (
+            <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700">
+              {lseg.adverseMedia.negativeCount} негативных
+            </span>
+          )}
+        </div>
+        {lseg.adverseMedia.articles.length === 0 ? (
+          <p className="text-sm text-neutral-500">Негативных публикаций не обнаружено.</p>
+        ) : (
+          <div className="space-y-2">
+            {lseg.adverseMedia.articles.map((a) => (
+              <div key={a.articleId} className="flex items-start justify-between gap-3 p-3 rounded-lg bg-neutral-50 border border-neutral-100">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-neutral-900 line-clamp-2">{a.headline}</p>
+                  <p className="text-xs text-neutral-500 mt-0.5">{a.publicationDate}</p>
+                  {a.categories.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {a.categories.map((cat) => (
+                        <span key={cat} className="text-xs bg-neutral-100 rounded px-1.5 py-0.5 text-neutral-600">{cat}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  {a.risk && (
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${riskBadge(a.risk)}`}>
+                      {a.risk}
+                    </span>
+                  )}
+                  {a.url && (
+                    <a href={a.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">
+                      Источник →
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function CaseDetail({ caseId }: { caseId: string }) {
   const { getCase, refreshCase, apiConnected } = useCases()
   const [activeTab, setActiveTab] = useState<Tab>('data')
@@ -705,6 +963,8 @@ export function CaseDetail({ caseId }: { caseId: string }) {
 
   const tabs: { id: Tab; label: string; icon: typeof Building2 }[] = [
     { id: 'data', label: 'Граф связей', icon: Network },
+    { id: 'scoring', label: 'Скоринг', icon: TrendingUp },
+    { id: 'lseg', label: 'LSEG / Санкции', icon: ShieldCheck },
     { id: 'documents', label: 'Документы', icon: FileText },
     { id: 'assessment', label: 'Заключение ИИ', icon: AlertTriangle },
     { id: 'chat', label: 'Чат с ИИ', icon: MessageSquare },
@@ -744,6 +1004,18 @@ export function CaseDetail({ caseId }: { caseId: string }) {
                   {caseData.riskLevel === 'low' ? 'Низкий риск' : caseData.riskLevel === 'medium' ? 'Средний риск' : 'Высокий риск'}
                 </span>
               )}
+              {caseData.totalScore !== null && caseData.totalScore !== undefined && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-neutral-100 text-neutral-600">
+                  <TrendingUp className="w-3 h-3" />
+                  {caseData.totalScore.toFixed(1)} / 100
+                </span>
+              )}
+              {caseData.lseg && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+                  <ShieldCheck className="w-3 h-3" />
+                  LSEG WC1
+                </span>
+              )}
             </div>
             <p className="text-neutral-500">
               <span className="font-mono">{caseData.iinBin}</span>
@@ -754,19 +1026,28 @@ export function CaseDetail({ caseId }: { caseId: string }) {
               <p className="text-sm text-red-600 mt-2">{reportError}</p>
             )}
           </div>
-          <button
-            type="button"
-            onClick={handleDownloadReport}
-            disabled={reportLoading}
-            className="flex items-center gap-2 px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors shrink-0"
-          >
-            {reportLoading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Download className="w-4 h-4" />
-            )}
-            PDF отчёт Adata
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              href={`/cases/${caseData.id}/report`}
+              className="flex items-center gap-2 px-4 py-2.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm font-medium rounded-lg transition-colors"
+            >
+              <FileText className="w-4 h-4" />
+              Отчёт
+            </Link>
+            <button
+              type="button"
+              onClick={handleDownloadReport}
+              disabled={reportLoading}
+              className="flex items-center gap-2 px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              {reportLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+              PDF Adata
+            </button>
+          </div>
         </div>
       </div>
 
@@ -795,6 +1076,8 @@ export function CaseDetail({ caseId }: { caseId: string }) {
       {activeTab === 'data' && (
         <DataTab caseData={caseData} onRefresh={() => refreshCase(caseId)} />
       )}
+      {activeTab === 'scoring' && <ScoringTab caseData={caseData} />}
+      {activeTab === 'lseg' && <LsegTab caseData={caseData} />}
       {activeTab === 'documents' && <DocumentsTab caseData={caseData} />}
       {activeTab === 'assessment' && <AssessmentTab caseData={caseData} />}
       {activeTab === 'chat' && <ChatTab caseData={caseData} />}

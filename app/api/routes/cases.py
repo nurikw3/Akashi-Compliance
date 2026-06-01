@@ -27,7 +27,7 @@ from app.services.affiliate_tree import (
     normalize_bin,
 )
 from app.services.import_parser import parse_import_file, preview_import_rows
-from app.services.pipeline import process_case
+from app.services.pipeline import process_case, rescreen_case_lseg
 from app.services.queue import (
     enqueue_affiliate_tree,
     enqueue_ai_conclusion,
@@ -109,6 +109,7 @@ def check_upload_duplicates(payload: CheckDuplicatesRequest) -> dict[str, Any]:
     return {"matches": matches, "count": len(matches)}
 
 
+@router.post("/upload/parse")
 async def parse_upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     filename = file.filename or ""
     content = await file.read()
@@ -415,3 +416,59 @@ def post_document(case_id: str, payload: DocumentRequest) -> dict[str, Any]:
             "uploadedAt": doc["uploaded_at"],
         }
     }
+
+
+@router.post("/admin/rescreen")
+async def rescreen_all_with_lseg() -> dict[str, Any]:
+    """Backfill LSEG screening + re-score for all existing ready cases.
+
+    Idempotent: skips cases that already have enriched_data.lseg.screenedAt.
+    Rate-limited: 0.5 s between requests to respect WC1 API limits.
+    """
+    import asyncio as _asyncio
+
+    rows = db.list_cases()
+    ready = [r for r in rows if r.get("status") == "ready"]
+
+    if not ready:
+        return {"queued": 0, "message": "Нет кейсов в статусе ready"}
+
+    async def _run() -> None:
+        ok = err = skipped = 0
+        for row in ready:
+            cid = row["id"]
+            enriched = row.get("enriched_data") or {}
+            lseg_existing = enriched.get("lseg")
+            if lseg_existing and lseg_existing.get("screenedAt"):
+                skipped += 1
+                continue
+            success = await rescreen_case_lseg(cid)
+            if success:
+                ok += 1
+            else:
+                err += 1
+            await _asyncio.sleep(0.5)
+
+    _asyncio.create_task(_run())
+
+    return {
+        "queued": len(ready),
+        "message": f"Запущен фоновый LSEG re-screen для {len(ready)} кейсов",
+    }
+
+
+@router.get("/cases/{case_id}/score")
+def get_case_score(case_id: str) -> dict[str, Any]:
+    """Return score breakdown and totalScore for a case."""
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    enriched = row.get("enriched_data") or {}
+    return {
+        "totalScore": enriched.get("totalScore"),
+        "riskLevel": row.get("risk_level"),
+        "breakdown": enriched.get("scoreBreakdown") or [],
+        "lsegScreenedAt": (enriched.get("lseg") or {}).get("screenedAt"),
+    }
+
