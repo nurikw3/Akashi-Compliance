@@ -142,6 +142,59 @@ def build_case_context(
     return "\n".join(parts)
 
 
+def build_short_context(
+    *,
+    company_name: str,
+    iin: str,
+    enrichment: dict[str, Any] | None,
+    assessment: dict[str, Any] | None,
+    lseg: dict[str, Any] | None = None,
+) -> str:
+    """Minimal surface context — LLM uses tools for details."""
+    parts = [f"Компания: {company_name} (БИН: {iin})"]
+
+    if assessment:
+        parts.append(
+            f"Уровень риска: {assessment.get('riskLevel', '—')}, "
+            f"балл: {assessment.get('score', '—')}"
+        )
+
+    if enrichment:
+        info = enrichment.get("companyInfo") or {}
+        parts.append(f"Директор: {info.get('director', '—')}")
+        parts.append(f"Статус: {info.get('operatingStatus', '—')}")
+
+        flags = enrichment.get("riskFlags") or []
+        if flags:
+            parts.append(f"Риск-флаги: {'; '.join(flags[:3])}")
+
+        courts = enrichment.get("courts") or {}
+        if courts.get("activeCases", 0) > 0:
+            parts.append(f"Активных судебных дел: {courts['activeCases']}")
+
+        affiliates = enrichment.get("affiliates") or {}
+        companies = [
+            c.get("name")
+            for c in (affiliates.get("companies") or [])[:5]
+            if c.get("name")
+        ]
+        if companies:
+            parts.append(f"Учредители: {', '.join(companies)}")
+
+    if lseg:
+        san = lseg.get("sanctions") or {}
+        pep = lseg.get("pep") or {}
+        if san.get("isOnList"):
+            parts.append(
+                f"LSEG: САНКЦИИ! Списки: {', '.join((san.get('matchedLists') or [])[:2])}"
+            )
+        if pep.get("isHit"):
+            parts.append("LSEG: PEP-совпадение по директору")
+
+    parts.append("\nДля получения деталей используй инструменты поиска.")
+    return "\n".join(parts)
+
+
 def context_as_json_snippet(context: str, *, max_chars: int = 24_000) -> str:
     """Trim very long context for token limits."""
     if len(context) <= max_chars:

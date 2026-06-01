@@ -1,14 +1,22 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-import { Shield, Upload, FolderOpen } from 'lucide-react'
+import { usePathname, useRouter } from 'next/navigation'
+import { FolderOpen, LogOut, Shield, Upload } from 'lucide-react'
+import { clearAuth } from '@/lib/auth'
 
 export function Header() {
   const pathname = usePathname()
+  const router = useRouter()
+
+  function handleLogout() {
+    clearAuth()
+    router.refresh()
+    window.location.href = '/'
+  }
 
   const links = [
-    { href: '/', label: 'Загрузка', icon: Upload },
+    { href: '/#bin-text', label: 'Загрузка', icon: Upload },
     { href: '/cases', label: 'Контрагенты', icon: FolderOpen },
   ]
 
@@ -42,6 +50,14 @@ export function Header() {
                 </Link>
               )
             })}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-neutral-600 hover:bg-neutral-100 transition-colors ml-2"
+            >
+              <LogOut className="w-4 h-4" />
+              Выйти
+            </button>
           </nav>
         </div>
       </div>

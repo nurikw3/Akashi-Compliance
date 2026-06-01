@@ -329,6 +329,18 @@ async def _probe_bin(
             ]
 
 
+def _display_company_name(row: dict[str, Any]) -> str:
+    from app.services.company_display import resolve_company_display_name
+
+    main_bin = normalize_bin(row.get("iin") or "")
+    enriched = row.get("enriched_data") or {}
+    return resolve_company_display_name(
+        row.get("company_name") or "",
+        main_bin,
+        enriched.get("enrichment"),
+    )
+
+
 async def build_affiliate_tree(case_id: str) -> None:
     """Background job: expand affiliate network to ``TREE_DEPTH`` levels."""
     row = db.get_case(case_id)
@@ -338,7 +350,7 @@ async def build_affiliate_tree(case_id: str) -> None:
     enriched = row.get("enriched_data") or {}
     enrichment = enriched.get("enrichment")
     main_bin = normalize_bin(row["iin"])
-    main_name = row["company_name"]
+    main_name = _display_company_name(row)
 
     if not enrichment or not main_bin:
         _save_enriched(
@@ -426,6 +438,16 @@ async def build_affiliate_tree(case_id: str) -> None:
             },
         )
         _save_enriched(case_id, enriched)
+        try:
+            from app.services.pipeline import rescreen_lseg_extended
+
+            await rescreen_lseg_extended(case_id)
+        except Exception as rescreen_exc:
+            logger.warning(
+                "LSEG extended rescreen after tree build failed for %s: %s",
+                case_id,
+                rescreen_exc,
+            )
         return
 
     level1_companies = [
@@ -469,6 +491,16 @@ async def build_affiliate_tree(case_id: str) -> None:
             },
         )
         _save_enriched(case_id, enriched)
+        try:
+            from app.services.pipeline import rescreen_lseg_extended
+
+            await rescreen_lseg_extended(case_id)
+        except Exception as rescreen_exc:
+            logger.warning(
+                "LSEG extended rescreen after tree build failed for %s: %s",
+                case_id,
+                rescreen_exc,
+            )
     except Exception as exc:
         logger.exception("Affiliate tree build failed for %s", case_id)
         enriched["nodeCache"] = node_cache

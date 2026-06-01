@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { useCases } from '@/lib/cases-context'
 import { buildCaseGroups } from '@/lib/case-groups'
+import { caseDisplayName } from '@/lib/case-display'
 import { rescreenAllWithLseg } from '@/lib/api'
 import type { Case } from '@/lib/types'
 
@@ -117,7 +118,7 @@ function CaseRowLink({ caseItem, nested = false }: { caseItem: Case; nested?: bo
         <div className="flex items-center gap-3 mb-1 flex-wrap">
           {nested && <GitBranch className="w-3.5 h-3.5 text-neutral-400 shrink-0" />}
           <h3 className={`truncate ${nested ? 'text-sm font-medium text-neutral-700' : 'font-medium text-neutral-900'}`}>
-            {caseItem.name}
+            {caseDisplayName(caseItem)}
           </h3>
           <RiskBadge level={caseItem.riskLevel} status={caseItem.status} />
         </div>
@@ -135,8 +136,11 @@ function CaseCardLink({ caseItem, compact = false }: { caseItem: Case; compact?:
       className={`block rounded-lg border border-neutral-100 hover:border-neutral-200 hover:bg-neutral-50 transition-colors ${compact ? 'p-3' : 'p-4'}`}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
-        <h3 className={`font-medium text-neutral-900 line-clamp-2 ${compact ? 'text-sm' : ''}`} title={caseItem.name}>
-          {caseItem.name}
+        <h3
+          className={`font-medium text-neutral-900 line-clamp-2 ${compact ? 'text-sm' : ''}`}
+          title={caseDisplayName(caseItem)}
+        >
+          {caseDisplayName(caseItem)}
         </h3>
         <ChevronRight className="w-4 h-4 text-neutral-400 shrink-0 mt-0.5" />
       </div>
@@ -293,9 +297,14 @@ export function CasesList() {
           </svg>
         </div>
         <h3 className="text-lg font-medium text-neutral-900 mb-2">Нет дел</h3>
-        <p className="text-neutral-500 mb-6">Загрузите Excel файл, чтобы создать первые дела</p>
-        <Link href="/" className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-          Загрузить файл
+        <p className="text-neutral-500 mb-6">
+          Загрузите список БИН или Excel / Word, чтобы создать первые дела
+        </p>
+        <Link
+          href="/#bin-text"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          Ввести БИН
         </Link>
       </div>
     )

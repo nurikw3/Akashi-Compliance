@@ -1,14 +1,13 @@
 """Unified risk scoring engine.
 
 Produces a 0–100 score from 7 weighted metrics sourced from Adata enrichment
-and LSEG World-Check One data. Replaces the two divergent models previously
-living in risk/service.py and enrichment/mapper.py.
+and LSEG World-Check One data.
 
 Metric weights (total = 100):
-  1. International sanctions  — 35 pts  (LSEG WC1 + Adata flags)
+  1. International sanctions  — 35 pts  (LSEG WC1; Adata — только КЗ санкц./крит.)
   2. Court activity           — 20 pts  (Adata courts + LLM severity)
-  3. Tax compliance           — 15 pts  (Adata taxes)
-  4. Legal status             — 15 pts  (Adata operatingStatus)
+  3. Tax compliance           — 15 pts  (Adata taxes + налоговый риск Adata)
+  4. Legal status             — 15 pts  (Adata operatingStatus + status flags)
   5. PEP screening            —  5 pts  (LSEG individuals)
   6. Adverse media            —  5 pts  (LSEG Media-Check)
   7. Affiliate risk           —  5 pts  (affiliate tree)
@@ -17,6 +16,17 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from typing import Any
+
+_ADATA_SANCTION_KEYWORDS = (
+    "террор",
+    "экстрем",
+    "санкц",
+    "розыск",
+    "запрещ",
+    "лжепредпр",
+    "педофил",
+    "банкрот",
+)
 
 
 @dataclass
@@ -38,8 +48,46 @@ class ScoringResult:
         return [asdict(m) for m in self.breakdown]
 
 
+def _adata_sanction_flags(enrichment: dict[str, Any]) -> list[str]:
+    flags = list(enrichment.get("statusFlags") or []) + list(
+        enrichment.get("riskFlags") or []
+    )
+    return [
+        flag
+        for flag in flags
+        if any(word in flag.lower() for word in _ADATA_SANCTION_KEYWORDS)
+    ]
+
+
+def _tax_risk_degree_flags(enrichment: dict[str, Any]) -> list[str]:
+    return [
+        flag
+        for flag in enrichment.get("riskFlags") or []
+        if "налоговый риск" in flag.lower()
+    ]
+
+
 class RiskScorer:
     """Calculate risk score from enriched_data (Adata) + optional lseg section."""
+
+    @staticmethod
+    def _lseg_requires_high_risk(lseg: dict[str, Any]) -> bool:
+        san = lseg.get("sanctions") or {}
+        if not san.get("isFormalSanction"):
+            return False
+        for hit in san.get("hits") or []:
+            if hit.get("isSanction"):
+                return True
+            if not hit.get("isMaterialMatch"):
+                continue
+            try:
+                score = float(hit.get("matchScore") or 0)
+            except (TypeError, ValueError):
+                score = 0.0
+            strength = (hit.get("matchStrength") or "").upper()
+            if strength in ("STRONG", "EXACT") and score >= 85:
+                return True
+        return False
 
     def calculate(
         self,
@@ -67,85 +115,139 @@ class RiskScorer:
         else:
             risk_level = "low"
 
+        if lseg and self._lseg_requires_high_risk(lseg):
+            risk_level = "high"
+
         return ScoringResult(
             total_score=round(total, 1),
             risk_level=risk_level,
             breakdown=breakdown,
         )
 
-    # ── Metric 1: Sanctions (35 pts) ──────────────────────────────────────────
-
     def _metric_sanctions(
         self, enrichment: dict[str, Any], lseg: dict[str, Any] | None
     ) -> MetricResult:
         max_pts = 35.0
 
-        # LSEG international sanctions take precedence
-        if lseg:
+        if lseg and lseg.get("screenedAt"):
             san = lseg.get("sanctions") or {}
-            if san.get("isOnList"):
+            screened_as = lseg.get("screenedName") or "компания"
+            hits = san.get("hits") or []
+            formal = [h for h in hits if h.get("isSanction")]
+
+            if formal:
                 lists = san.get("matchedLists") or []
-                label = ", ".join(lists[:3]) if lists else "international watchlist"
+                label = ", ".join(lists[:3]) if lists else "международные списки"
+                names = ", ".join(
+                    (h.get("primaryName") or "") for h in formal[:2] if h.get("primaryName")
+                )
+                detail = f" ({names})" if names else ""
                 return MetricResult(
                     metric="sanctions",
                     points=max_pts,
                     max_points=max_pts,
-                    reason=f"В санкционных списках: {label}",
+                    reason=f"LSEG WC1: формальные санкции — {label}{detail}",
                     source="lseg",
                 )
 
-        # Adata domestic flags
-        sanctions = enrichment.get("sanctions") or {}
-        risk_flags: list[str] = enrichment.get("riskFlags") or []
+            material = [h for h in hits if h.get("isMaterialMatch")]
+            if material:
+                names = ", ".join(
+                    (h.get("primaryName") or h.get("submittedName") or "совпадение")
+                    for h in material[:2]
+                )
+                return MetricResult(
+                    metric="sanctions",
+                    points=max_pts * 0.6,
+                    max_points=max_pts,
+                    reason=(
+                        f"LSEG WC1: сильные совпадения по «{screened_as}» — "
+                        f"проверить вручную ({names})"
+                    ),
+                    source="lseg",
+                )
 
-        if sanctions.get("isOnList"):
-            all_flags = (sanctions.get("lists") or []) + risk_flags
-            terror = any(
-                w in f.lower() for f in all_flags
-                for w in ("террор", "экстремизм", "terror")
+            weak_hits = [
+                h
+                for h in hits
+                if not h.get("isSanction") and not h.get("isMaterialMatch")
+            ]
+            if weak_hits:
+                weak = len(weak_hits)
+                return MetricResult(
+                    metric="sanctions",
+                    points=0,
+                    max_points=max_pts,
+                    reason=(
+                        f"LSEG WC1: санкций нет; {weak} слабых совпадений по названию "
+                        f"(см. вкладку LSEG, не влияют на балл)"
+                    ),
+                    source="lseg",
+                )
+
+            kz_flags = _adata_sanction_flags(enrichment)
+            if kz_flags:
+                return MetricResult(
+                    metric="sanctions",
+                    points=max_pts * 0.5,
+                    max_points=max_pts,
+                    reason=(
+                        "LSEG WC1: международных санкций нет. "
+                        f"Adata — критические флаги КЗ: {', '.join(kz_flags[:2])}"
+                    ),
+                    source="adata",
+                )
+
+            return MetricResult(
+                metric="sanctions",
+                points=0,
+                max_points=max_pts,
+                reason=(
+                    f"LSEG WC1 ({screened_as}): в международных санкционных "
+                    "списках не значится"
+                ),
+                source="lseg",
             )
-            pts = max_pts if terror else max_pts * 0.8
+
+        kz_flags = _adata_sanction_flags(enrichment)
+        if kz_flags:
+            terror = any(
+                any(w in f.lower() for w in ("террор", "экстрем", "terror"))
+                for f in kz_flags
+            )
+            pts = max_pts if terror else max_pts * 0.5
             return MetricResult(
                 metric="sanctions",
                 points=pts,
                 max_points=max_pts,
-                reason=f"КЗ санкционные флаги: {', '.join(risk_flags[:3])}",
-                source="adata",
-            )
-
-        # Partial: severe risk flags without formal sanction listing
-        severe = [
-            f for f in risk_flags
-            if any(w in f.lower() for w in ("террор", "банкрот", "розыск", "арест"))
-        ]
-        if severe:
-            return MetricResult(
-                metric="sanctions",
-                points=max_pts * 0.4,
-                max_points=max_pts,
-                reason=f"Критические флаги риска: {', '.join(severe[:2])}",
+                reason=f"Adata — санкционные/критические флаги КЗ: {', '.join(kz_flags[:3])}",
                 source="adata",
             )
 
         return MetricResult(
-            metric="sanctions", points=0, max_points=max_pts,
-            reason="Санкционных записей не обнаружено", source="adata",
+            metric="sanctions",
+            points=0,
+            max_points=max_pts,
+            reason="Международные и КЗ санкционные списки: совпадений нет",
+            source="adata",
         )
-
-    # ── Metric 2: Court activity (20 pts) ────────────────────────────────────
 
     def _metric_courts(self, enrichment: dict[str, Any]) -> MetricResult:
         max_pts = 20.0
         courts = enrichment.get("courts") or {}
         active = int(courts.get("activeCases") or 0)
+        scope = courts.get("scope") or "company"
+        note = courts.get("note") or ""
 
         if active == 0:
             return MetricResult(
-                metric="courts", points=0, max_points=max_pts,
-                reason="Активных судебных дел нет", source="adata",
+                metric="courts",
+                points=0,
+                max_points=max_pts,
+                reason="Активных судебных дел нет",
+                source="adata",
             )
 
-        # Check AI-classified severity in cases list
         cases_list: list[dict] = courts.get("cases") or []
         has_criminal = any(
             (c.get("aiAnalysis") or {}).get("category") == "criminal"
@@ -157,7 +259,7 @@ class RiskScorer:
         )
 
         if has_criminal:
-            pts = max_pts  # 20
+            pts = max_pts
         elif active > 5:
             pts = max_pts * 0.85
         elif has_enforcement:
@@ -167,45 +269,66 @@ class RiskScorer:
         else:
             pts = max_pts * 0.25
 
+        scope_hint = f", объект: {scope}" if scope != "company" else ""
+        note_hint = f". {note}" if note else ""
         return MetricResult(
             metric="courts",
             points=pts,
             max_points=max_pts,
-            reason=f"Активных судебных дел: {active}"
-            + (" (уголовные)" if has_criminal else ""),
+            reason=f"Активных дел: {active}{scope_hint}"
+            + (" (есть уголовные)" if has_criminal else "")
+            + note_hint,
             source="adata",
         )
-
-    # ── Metric 3: Tax compliance (15 pts) ────────────────────────────────────
 
     def _metric_taxes(self, enrichment: dict[str, Any]) -> MetricResult:
         max_pts = 15.0
         taxes = enrichment.get("taxes") or {}
         debt = float(taxes.get("debt") or 0)
         status = (taxes.get("status") or "clean").lower()
+        tax_risk_flags = _tax_risk_degree_flags(enrichment)
 
-        if debt == 0:
+        pts = 0.0
+        parts: list[str] = []
+
+        if debt > 0:
+            if status == "critical" or debt >= 10_000_000:
+                pts = max(pts, max_pts)
+                parts.append(f"задолженность {debt:,.0f} тг (критическая)".replace(",", " "))
+            elif debt >= 1_000_000:
+                pts = max(pts, max_pts * 0.7)
+                parts.append(f"задолженность {debt:,.0f} тг".replace(",", " "))
+            else:
+                pts = max(pts, max_pts * 0.3)
+                parts.append(f"задолженность {debt:,.0f} тг".replace(",", " "))
+
+        if tax_risk_flags:
+            degree_text = tax_risk_flags[0]
+            lowered = degree_text.lower()
+            if "высок" in lowered or "high" in lowered:
+                pts = max(pts, max_pts * 0.55)
+            elif "средн" in lowered or "medium" in lowered:
+                pts = max(pts, max_pts * 0.25)
+            elif "низк" in lowered or "low" in lowered:
+                pts = max(pts, max_pts * 0.1)
+            parts.append(degree_text)
+
+        if pts == 0:
             return MetricResult(
-                metric="taxes", points=0, max_points=max_pts,
-                reason="Налоговых задолженностей нет", source="adata",
+                metric="taxes",
+                points=0,
+                max_points=max_pts,
+                reason="Налоговая задолженность отсутствует, риск-фактор Adata в норме",
+                source="adata",
             )
 
-        if status == "critical" or debt >= 10_000_000:
-            pts = max_pts
-            reason = f"Критическая налоговая задолженность: {debt:,.0f} тг"
-        elif debt >= 1_000_000:
-            pts = max_pts * 0.7
-            reason = f"Значительная налоговая задолженность: {debt:,.0f} тг"
-        else:
-            pts = max_pts * 0.3
-            reason = f"Налоговая задолженность: {debt:,.0f} тг"
-
         return MetricResult(
-            metric="taxes", points=pts, max_points=max_pts,
-            reason=reason.replace(",", " "), source="adata",
+            metric="taxes",
+            points=min(max_pts, round(pts, 1)),
+            max_points=max_pts,
+            reason="; ".join(parts),
+            source="adata",
         )
-
-    # ── Metric 4: Legal status (15 pts) ──────────────────────────────────────
 
     def _metric_legal_status(self, enrichment: dict[str, Any]) -> MetricResult:
         max_pts = 15.0
@@ -220,64 +343,93 @@ class RiskScorer:
             any(w in f.lower() for w in terminal) for f in status_flags
         ):
             return MetricResult(
-                metric="legal_status", points=max_pts, max_points=max_pts,
-                reason=f"Компания ликвидирована: {status or ', '.join(status_flags[:1])}",
+                metric="legal_status",
+                points=max_pts,
+                max_points=max_pts,
+                reason=f"Компания ликвидирована или исключена: {status or status_flags[0]}",
                 source="adata",
             )
 
         if any(w in status for w in suspended):
             return MetricResult(
-                metric="legal_status", points=max_pts * 0.6, max_points=max_pts,
+                metric="legal_status",
+                points=max_pts * 0.6,
+                max_points=max_pts,
                 reason=f"Деятельность приостановлена: {status}",
+                source="adata",
+            )
+
+        financial = [f for f in status_flags if "финансов" in f.lower()]
+        if financial:
+            return MetricResult(
+                metric="legal_status",
+                points=max_pts * 0.35,
+                max_points=max_pts,
+                reason=f"Статусные флаги Adata: {', '.join(financial[:2])}",
                 source="adata",
             )
 
         if status_flags:
             return MetricResult(
-                metric="legal_status", points=max_pts * 0.4 * min(len(status_flags), 2) / 2,
+                metric="legal_status",
+                points=max_pts * 0.2 * min(len(status_flags), 2),
                 max_points=max_pts,
                 reason=f"Статусные флаги: {', '.join(status_flags[:2])}",
                 source="adata",
             )
 
         return MetricResult(
-            metric="legal_status", points=0, max_points=max_pts,
-            reason="Правовой статус в норме", source="adata",
+            metric="legal_status",
+            points=0,
+            max_points=max_pts,
+            reason=f"Правовой статус: {status or 'действующая'}",
+            source="adata",
         )
-
-    # ── Metric 5: PEP screening (5 pts) ──────────────────────────────────────
 
     def _metric_pep(self, lseg: dict[str, Any] | None) -> MetricResult:
         max_pts = 5.0
         if not lseg:
             return MetricResult(
-                metric="pep", points=0, max_points=max_pts,
-                reason="LSEG не подключён — PEP-скрининг не выполнен", source="none",
+                metric="pep",
+                points=0,
+                max_points=max_pts,
+                reason="LSEG не подключён — PEP-скрининг не выполнен",
+                source="none",
             )
 
         pep = lseg.get("pep") or {}
         if pep.get("isHit"):
             individuals = pep.get("individuals") or []
-            names = [i.get("primaryName", "") for i in individuals[:2] if i.get("primaryName")]
+            names = [
+                i.get("primaryName", "")
+                for i in individuals[:2]
+                if i.get("primaryName")
+            ]
             return MetricResult(
-                metric="pep", points=max_pts, max_points=max_pts,
-                reason=f"PEP совпадение: {', '.join(names) or 'физическое лицо'}",
+                metric="pep",
+                points=max_pts,
+                max_points=max_pts,
+                reason=f"PEP совпадение (руководство): {', '.join(names) or 'физлицо'}",
                 source="lseg",
             )
 
         return MetricResult(
-            metric="pep", points=0, max_points=max_pts,
-            reason="PEP-совпадений не обнаружено", source="lseg",
+            metric="pep",
+            points=0,
+            max_points=max_pts,
+            reason="PEP-совпадений по руководителю не обнаружено",
+            source="lseg",
         )
-
-    # ── Metric 6: Adverse media (5 pts) ──────────────────────────────────────
 
     def _metric_adverse_media(self, lseg: dict[str, Any] | None) -> MetricResult:
         max_pts = 5.0
         if not lseg:
             return MetricResult(
-                metric="adverse_media", points=0, max_points=max_pts,
-                reason="LSEG не подключён — мониторинг СМИ не выполнен", source="none",
+                metric="adverse_media",
+                points=0,
+                max_points=max_pts,
+                reason="LSEG не подключён — мониторинг СМИ не выполнен",
+                source="none",
             )
 
         media = lseg.get("adverseMedia") or {}
@@ -285,8 +437,11 @@ class RiskScorer:
 
         if negative_count == 0:
             return MetricResult(
-                metric="adverse_media", points=0, max_points=max_pts,
-                reason="Негативных публикаций не обнаружено", source="lseg",
+                metric="adverse_media",
+                points=0,
+                max_points=max_pts,
+                reason="Негативных публикаций в Media-Check не найдено",
+                source="lseg",
             )
 
         pts = max_pts if negative_count >= 3 else max_pts * (negative_count / 3)
@@ -298,8 +453,6 @@ class RiskScorer:
             source="lseg",
         )
 
-    # ── Metric 7: Affiliate risk (5 pts) ─────────────────────────────────────
-
     def _metric_affiliate_risk(
         self,
         enrichment: dict[str, Any],
@@ -307,32 +460,36 @@ class RiskScorer:
     ) -> MetricResult:
         max_pts = 5.0
 
-        # Check affiliate tree for high-risk nodes
         if affiliate_tree:
             nodes: list[dict] = affiliate_tree.get("nodes") or []
             high_risk_nodes = [
-                n for n in nodes
-                if n.get("riskLevel") == "high" and not n.get("main")
+                n for n in nodes if n.get("riskLevel") == "high" and not n.get("main")
             ]
             if high_risk_nodes:
                 names = [n.get("label", "") for n in high_risk_nodes[:2]]
                 return MetricResult(
-                    metric="affiliate_risk", points=max_pts, max_points=max_pts,
+                    metric="affiliate_risk",
+                    points=max_pts,
+                    max_points=max_pts,
                     reason=f"Аффилиат с высоким риском: {', '.join(names)}",
                     source="affiliate_tree",
                 )
 
-        # Fallback: check enrichment affiliates count
         affiliates = enrichment.get("affiliates") or {}
         companies = affiliates.get("companies") or []
         if len(companies) > 10:
             return MetricResult(
-                metric="affiliate_risk", points=max_pts * 0.4, max_points=max_pts,
-                reason=f"Большое число аффилиатов: {len(companies)}",
+                metric="affiliate_risk",
+                points=max_pts * 0.4,
+                max_points=max_pts,
+                reason=f"Расширенная сеть связей: {len(companies)} аффилиатов",
                 source="adata",
             )
 
         return MetricResult(
-            metric="affiliate_risk", points=0, max_points=max_pts,
-            reason="Аффилиатов с высоким риском не обнаружено", source="adata",
+            metric="affiliate_risk",
+            points=0,
+            max_points=max_pts,
+            reason="Аффилиатов с высоким риском не выявлено",
+            source="adata",
         )

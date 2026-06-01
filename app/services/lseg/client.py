@@ -154,7 +154,7 @@ class LsegClient:
 
         body_bytes: bytes | None = None
         if payload is not None:
-            body_bytes = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            body_bytes = _json.dumps(payload, indent=4).encode("utf-8")
 
         date = _rfc7231_date()
 
@@ -186,9 +186,11 @@ class LsegClient:
     async def screen_sync(self, name: str, entity_type: str) -> dict[str, Any]:
         """Create a WC1 case and screen it synchronously. Returns full case object."""
         payload: dict[str, Any] = {
+            "caseId": "",
             "groupId": settings.lseg_group_id,
             "entityType": entity_type,
             "providerTypes": ["WATCHLIST"],
+            "caseScreeningState": {"WATCHLIST": "INITIAL"},
             "name": name,
             "nameTransposition": False,
             "secondaryFields": [],

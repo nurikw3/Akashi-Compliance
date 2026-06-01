@@ -60,11 +60,11 @@ def test_company_data_courts_enrichment_from_courtcase():
     assert data.section_sources["courts"] == "adata"
 
 
-def test_courtcase_failure_marks_stub():
+def test_courtcase_failure_marks_none():
     data = CompanyData(
         iin="123456789012",
         court_cases=2,
-        raw={"courtcase": {"error": "timeout"}, "_courts_source": "stub"},
+        raw={"courtcase": {"error": "timeout"}, "_courts_source": "none"},
     )
     sources = infer_section_sources_from_data(data, "adata")
-    assert sources["courts"] == "stub"
+    assert sources["courts"] == "none"

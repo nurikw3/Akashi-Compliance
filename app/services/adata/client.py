@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.services.cache import ADATA_TTL, adata_key, get_cached, set_cached
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,11 @@ async def fetch_company_info(bin_value: str) -> dict[str, Any]:
     if not settings.adata_token:
         raise AdataError("ADATA_TOKEN is not configured")
 
+    cache_key = adata_key("info", bin_value)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        return cached
+
     timeout = settings.adata_timeout_seconds
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.get(_token_path("info"), params={"iinBin": bin_value})
@@ -179,6 +185,7 @@ async def fetch_company_info(bin_value: str) -> dict[str, Any]:
         data = result.get("data")
         if not isinstance(data, dict):
             raise AdataError("Company info poll returned no data")
+        await set_cached(cache_key, data, ADATA_TTL)
         return data
 
 
@@ -333,49 +340,198 @@ async def run_parallel_checks(bin_value: str) -> dict[str, Any]:
     return result
 
 
-async def download_company_report(bin_value: str, out_path: Path) -> Path:
+async def fetch_pdf_report_url(iin: str) -> str:
+    """Return Adata PDF download URL (report token + poll info/check for ``data.location``)."""
     if not settings.adata_token:
         raise AdataError("ADATA_TOKEN is not configured")
 
-    url = _token_path("report")
-    timeout = settings.adata_timeout_seconds
+    report_url = _token_path("report")
+    check_url = _check_url()
+    timeout = max(settings.adata_timeout_seconds, 35.0)
+
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.get(url, params={"iinBin": bin_value})
+        response = await client.get(report_url, params={"iinBin": iin})
         response.raise_for_status()
-        content_type = response.headers.get("content-type", "")
+        data = response.json()
+        if not data.get("success"):
+            raise AdataError(f"Report init failed: {data}")
+        job_token = data.get("token")
+        if not job_token:
+            raise AdataError("No token in report response")
 
-        if "pdf" in content_type or response.content[:4] == b"%PDF":
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_bytes(response.content)
-            return out_path
+        for _ in range(10):
+            await asyncio.sleep(3)
+            check = await client.get(check_url, params={"token": job_token})
+            check.raise_for_status()
+            result = check.json()
+            location = (result.get("data") or {}).get("location")
+            if location:
+                return str(location)
 
-        try:
+    raise AdataError("PDF report generation timeout after 30s")
+
+
+async def download_company_report(bin_value: str, out_path: Path) -> Path:
+    """Download Adata PDF to *out_path* (uses :func:`fetch_pdf_report_url`)."""
+    pdf_url = await fetch_pdf_report_url(bin_value)
+    timeout = max(settings.adata_timeout_seconds, 35.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.get(pdf_url, follow_redirects=True)
+        response.raise_for_status()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(response.content)
+        return out_path
+
+
+# ---------------------------------------------------------------------------
+# Helpers for new endpoints
+# ---------------------------------------------------------------------------
+
+
+def _relation_scheme_check_url() -> str:
+    base = settings.adata_base_url.rstrip("/")
+    return f"{base}/relation-scheme/check/{settings.adata_token}"
+
+
+async def _poll_with_url(
+    client: httpx.AsyncClient,
+    job_token: str,
+    check_url: str,
+    *,
+    attempts: int | None = None,
+    delay: float | None = None,
+) -> dict[str, Any]:
+    """Like ``_poll`` but accepts an explicit *check_url* instead of the default info/check."""
+    attempts = attempts or settings.adata_poll_attempts
+    delay = delay or settings.adata_poll_delay_seconds
+    for _ in range(attempts):
+        await asyncio.sleep(delay)
+        response = await client.get(check_url, params={"token": job_token})
+        response.raise_for_status()
+        data = response.json()
+        if data.get("data") is not None:
+            return data
+    return {"error": "timeout"}
+
+
+# ---------------------------------------------------------------------------
+# New public endpoints (trustworthy-plus, beneficiary, non-resident, relation)
+# ---------------------------------------------------------------------------
+
+
+async def fetch_trustworthy_plus(iin: str) -> dict[str, Any]:
+    """Return trustworthy-plus compliance data for *iin*, with 12-hour Redis cache."""
+    cache_key = adata_key("trustworthy", iin)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        timeout = settings.adata_timeout_seconds
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = _token_path("trustworthy-plus")
+            response = await client.get(url, params={"iinBin": iin})
+            response.raise_for_status()
             payload = response.json()
-        except Exception as exc:
-            raise AdataError(f"Unexpected report response: {exc}") from exc
+            if "token" not in payload:
+                return {}
+            result = await _poll(client, payload["token"])
+            if result.get("error"):
+                return {}
+            data = result.get("data")
+            if not isinstance(data, dict):
+                return {}
+            await set_cached(cache_key, data, ADATA_TTL)
+            return data
+    except Exception as exc:
+        logger.warning("fetch_trustworthy_plus failed for IIN %s: %s", iin, exc)
+        return {}
 
-        inner_url = (
-            payload.get("url")
-            or payload.get("link")
-            or payload.get("pdfUrl")
-            or payload.get("pdf_url")
-        )
-        if inner_url:
-            r2 = await client.get(inner_url)
-            r2.raise_for_status()
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_bytes(r2.content)
-            return out_path
 
-        if "token" in payload:
-            polled = await _poll(client, payload["token"], attempts=15, delay=3.0)
-            data = polled.get("data") or {}
-            polled_url = data.get("url") or data.get("pdfUrl")
-            if polled_url:
-                r3 = await client.get(polled_url)
-                r3.raise_for_status()
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(r3.content)
-                return out_path
+async def fetch_beneficiary(iin: str) -> list[dict[str, Any]]:
+    """Return beneficiary list for *iin*, with 12-hour Redis cache."""
+    cache_key = adata_key("beneficiary", iin)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        return cached.get("items", [])  # type: ignore[return-value]
 
-        raise AdataError("Could not download PDF report from Adata")
+    try:
+        timeout = settings.adata_timeout_seconds
+        check_url = _relation_scheme_check_url()
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = _token_path("relation-scheme/beneficiary")
+            response = await client.get(url, params={"iinBin": iin})
+            response.raise_for_status()
+            payload = response.json()
+            if "token" not in payload:
+                return []
+            result = await _poll_with_url(client, payload["token"], check_url)
+            if result.get("error"):
+                return []
+            data = result.get("data")
+            items: list[dict[str, Any]] = data if isinstance(data, list) else []
+            await set_cached(cache_key, {"items": items}, ADATA_TTL)
+            return items
+    except Exception as exc:
+        logger.warning("fetch_beneficiary failed for IIN %s: %s", iin, exc)
+        return []
+
+
+async def fetch_non_resident_affiliations(iin: str) -> dict[str, Any]:
+    """Return non-resident affiliation data for *iin*, with 12-hour Redis cache."""
+    cache_key = adata_key("nonresident", iin)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    _default: dict[str, Any] = {"hasNonResidentFromAll": False, "data": []}
+    try:
+        timeout = settings.adata_timeout_seconds
+        check_url = _relation_scheme_check_url()
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = _token_path("relation-scheme/affiliation-non-resident")
+            response = await client.get(url, params={"iinBin": iin})
+            response.raise_for_status()
+            payload = response.json()
+            if "token" not in payload:
+                return _default
+            result = await _poll_with_url(client, payload["token"], check_url)
+            if result.get("error"):
+                return _default
+            data = result.get("data")
+            if not isinstance(data, dict):
+                return _default
+            await set_cached(cache_key, data, ADATA_TTL)
+            return data
+    except Exception as exc:
+        logger.warning("fetch_non_resident_affiliations failed for IIN %s: %s", iin, exc)
+        return _default
+
+
+async def fetch_relation_extended(iin: str) -> dict[str, Any]:
+    """Return extended relation/affiliation data for *iin*, with 12-hour Redis cache."""
+    cache_key = adata_key("relation", iin)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        timeout = settings.adata_timeout_seconds
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = _token_path("relation")
+            response = await client.get(url, params={"iinBin": iin})
+            response.raise_for_status()
+            payload = response.json()
+            if "token" not in payload:
+                return {}
+            result = await _poll(client, payload["token"])
+            if result.get("error"):
+                return {}
+            data = result.get("data")
+            if not isinstance(data, dict):
+                return {}
+            await set_cached(cache_key, data, ADATA_TTL)
+            return data
+    except Exception as exc:
+        logger.warning("fetch_relation_extended failed for IIN %s: %s", iin, exc)
+        return {}

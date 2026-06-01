@@ -81,6 +81,33 @@ CORE_INFO_DATA = {
 }
 
 
+def test_map_info_ignores_director_dict_blob() -> None:
+    data = {
+        **CORE_INFO_DATA,
+        "basic": {
+            **CORE_INFO_DATA["basic"],
+            "fullname_director": "",
+            "director": CORE_INFO_DATA["riskFactor"]["head"],
+        },
+        "connectedDiagram": {},
+    }
+    mapped = map_info_data("171040021791", data)
+    assert mapped["director"] is None
+
+
+def test_map_info_falls_back_to_diagram_head_name() -> None:
+    data = {
+        **CORE_INFO_DATA,
+        "basic": {
+            **CORE_INFO_DATA["basic"],
+            "fullname_director": "",
+            "director": CORE_INFO_DATA["riskFactor"]["head"],
+        },
+    }
+    mapped = map_info_data("171040021791", data)
+    assert mapped["director"] == "УСПАНОВ РУСТЕМ КАЙРАТОВИЧ"
+
+
 def test_map_core_info_structure():
     mapped = map_info_data("171040021791", CORE_INFO_DATA)
     assert "Финансовые проблемы" in mapped["status_flags"]

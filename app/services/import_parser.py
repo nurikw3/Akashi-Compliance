@@ -190,6 +190,8 @@ def parse_docx_bytes(content: bytes) -> list[dict[str, str]]:
 
 def parse_import_file(filename: str, content: bytes) -> list[dict[str, str]]:
     lower = filename.lower()
+    if lower.endswith((".txt", ".csv")):
+        return parse_bins_bytes(content)
     if lower.endswith(".docx"):
         return parse_docx_bytes(content)
     if lower.endswith((".xlsx", ".xls")):
@@ -199,24 +201,50 @@ def parse_import_file(filename: str, content: bytes) -> list[dict[str, str]]:
     return parse_excel_bytes(content)
 
 
+def placeholder_name_for_bin(iin_bin: str) -> str:
+    return f"БИН {iin_bin}"
+
+
+def parse_bins_text(text: str) -> list[dict[str, str]]:
+    """Extract unique 12-digit BIN/IIN values from plain text (one or many per line)."""
+    seen: set[str] = set()
+    items: list[dict[str, str]] = []
+    for match in BIN_PATTERN.finditer(text or ""):
+        iin_bin = match.group(1)
+        if iin_bin in seen:
+            continue
+        seen.add(iin_bin)
+        items.append({"name": placeholder_name_for_bin(iin_bin), "iinBin": iin_bin})
+    return items
+
+
+def parse_bins_bytes(content: bytes) -> list[dict[str, str]]:
+    for encoding in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
+        try:
+            return parse_bins_text(content.decode(encoding))
+        except UnicodeDecodeError:
+            continue
+    return parse_bins_text(content.decode("utf-8", errors="replace"))
+
+
 def validate_import_row(name: str, iin_bin: str) -> dict[str, Any]:
     digits = _digits_only(iin_bin)
     extra_data: dict[str, str] = {}
     valid = True
     error: str | None = None
+    display_name = name.strip()
 
-    if not name.strip():
-        valid = False
-        error = "Отсутствует название"
-    elif not digits:
+    if not digits:
         valid = False
         error = "Отсутствует ИИН/БИН"
     elif len(digits) != 12:
         valid = False
         error = "ИИН/БИН должен содержать 12 цифр"
+    elif not display_name:
+        display_name = placeholder_name_for_bin(digits)
 
     return {
-        "name": name.strip(),
+        "name": display_name,
         "iinBin": digits,
         "extraData": extra_data,
         "valid": valid,

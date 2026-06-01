@@ -117,7 +117,7 @@ def test_map_raw_from_info_payload():
     assert company.section_sources["courts"] == "adata"
     assert company.section_sources["sanctions"] == "adata"
     assert company.section_sources["affiliates"] == "adata"
-    assert company.section_sources["assessment"] == "stub"
+    assert company.section_sources["assessment"] == "none"
 
 
 def test_company_data_enrichment_from_info():

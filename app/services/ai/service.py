@@ -4,16 +4,24 @@ import re
 from typing import Any, Literal
 
 from app.core.config import settings
-from app.services.ai.context import build_case_context, context_as_json_snippet
+from app.services.ai.context import build_case_context, build_short_context
 
 AiMode = Literal["openai", "template"]
 
-SYSTEM_PROMPT = """Ты — ассистент комплаенс-офицера в Казахстане.
-Отвечай только на основе предоставленного досье контрагента (данные Adata и внутренняя оценка).
-Если данных нет — честно скажи об этом и предложи, что запросить.
-Отвечай на русском языке, структурированно, по делу.
-Можешь: анализировать риски, аффилированность, суды, налоги; составлять служебные записки; перечислять нужные документы.
-Не выдумывай факты, которых нет в досье."""
+SYSTEM_PROMPT = """Ты — ИИ-агент комплаенс-офицера в Казахстане.
+
+У тебя есть инструменты для поиска данных в базе:
+- search_affiliate(name) — найти аффилиата по имени
+- get_case_detail(bin_iin) — получить полное досье по БИН
+- search_lseg_sanctions(name) — проверить санкции по имени
+
+ПРАВИЛА:
+1. Начинай с краткого контекста. Если нужны детали — используй инструменты.
+2. Отвечай только на основе найденных данных. Не выдумывай.
+3. Если данных нет — скажи честно.
+4. Отвечай на русском языке, структурированно.
+5. При вопросах об аффилиатах/санкциях ВСЕГДА используй инструменты.
+"""
 
 
 class AIService:
@@ -41,6 +49,7 @@ class AIService:
     async def chat_reply(
         self,
         *,
+        case_id: str,
         company_name: str,
         iin: str,
         message: str,
@@ -49,16 +58,22 @@ class AIService:
         conclusion: str | None,
         history: list[dict[str, str]] | None = None,
         data_sources: dict[str, str] | None = None,
+        lseg: dict[str, Any] | None = None,
     ) -> tuple[str, AiMode]:
-        context = context_as_json_snippet(
-            build_case_context(
-                company_name=company_name,
-                iin=iin,
-                enrichment=enrichment,
-                assessment=assessment,
-                conclusion=conclusion,
-                data_sources=data_sources,
-            )
+        context = build_short_context(
+            company_name=company_name,
+            iin=iin,
+            enrichment=enrichment,
+            assessment=assessment,
+            lseg=lseg,
+        )
+        full_context = build_case_context(
+            company_name=company_name,
+            iin=iin,
+            enrichment=enrichment,
+            assessment=assessment,
+            conclusion=conclusion,
+            data_sources=data_sources,
         )
 
         if settings.openai_api_key:
@@ -68,13 +83,14 @@ class AIService:
                     message=message,
                     context=context,
                     history=history or [],
+                    case_id=case_id,
                 )
                 return reply, "openai"
             except Exception:
                 pass
 
         return (
-            self._template_chat(company_name, message, context, enrichment, assessment),
+            self._template_chat(company_name, message, full_context, enrichment, assessment),
             "template",
         )
 
@@ -256,24 +272,18 @@ class AIService:
         message: str,
         context: str,
         history: list[dict[str, str]],
+        case_id: str,
     ) -> str:
-        client = self._client()
-        messages: list[dict[str, str]] = [
+        import json as _json
+
+        from app.services.ai.tools import TOOLS, execute_tool
+
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Ниже полное досье контрагента «{company_name}». "
-                    f"Используй его для всех ответов.\n\n{context}"
-                ),
-            },
-            {
-                "role": "assistant",
-                "content": "Досье принято. Готов отвечать на вопросы по этому контрагенту.",
-            },
+            {"role": "user", "content": f"ДОСЬЕ (краткое):\n{context}"},
         ]
 
-        for item in history[-16:]:
+        for item in history[-6:]:
             role = item.get("role")
             content = (item.get("content") or "").strip()
             if role in ("user", "assistant") and content:
@@ -281,10 +291,49 @@ class AIService:
 
         messages.append({"role": "user", "content": message})
 
+        client = self._client()
+
+        for _ in range(3):
+            response = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                max_tokens=1500,
+                temperature=0.2,
+            )
+
+            choice = response.choices[0]
+
+            if choice.finish_reason == "stop" or not choice.message.tool_calls:
+                content = choice.message.content
+                if not content:
+                    raise ValueError("Empty OpenAI response")
+                return content
+
+            messages.append(choice.message)
+
+            for tool_call in choice.message.tool_calls:
+                try:
+                    args = _json.loads(tool_call.function.arguments)
+                except Exception:
+                    args = {}
+
+                result = execute_tool(tool_call.function.name, args, case_id)
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result,
+                    }
+                )
+
         response = await client.chat.completions.create(
             model=settings.openai_model,
             messages=messages,
-            temperature=0.4,
+            max_tokens=1500,
+            temperature=0.2,
         )
         content = response.choices[0].message.content
         if not content:

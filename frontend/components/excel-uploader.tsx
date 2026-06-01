@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { checkUploadDuplicates, type DuplicateMatch, parseImportFile } from '@/lib/api'
 import { useCases } from '@/lib/cases-context'
+import { cn } from '@/lib/utils'
 
 interface ParsedRow {
   name: string
@@ -25,7 +26,11 @@ interface ParsedRow {
   error?: string
 }
 
-export function ExcelUploader() {
+type ExcelUploaderProps = {
+  className?: string
+}
+
+export function ExcelUploader({ className }: ExcelUploaderProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [parsedData, setParsedData] = useState<ParsedRow[] | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
@@ -212,13 +217,15 @@ export function ExcelUploader() {
   const invalidCount = parsedData?.filter((r) => !r.valid).length ?? 0
 
   return (
-    <div className="w-full max-w-2xl mx-auto">
+    <div className={cn('w-full flex flex-col', className)}>
       {!parsedData ? (
         <div
-          className={`
-            relative border-2 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer
-            ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-neutral-300 hover:border-neutral-400 bg-white'}
-          `}
+          className={cn(
+            'relative flex flex-1 flex-col items-center justify-center border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer min-h-[280px]',
+            isDragging
+              ? 'border-blue-500 bg-blue-50'
+              : 'border-neutral-300 hover:border-neutral-400 bg-white'
+          )}
           onDragOver={(e) => {
             e.preventDefault()
             setIsDragging(true)
@@ -243,14 +250,14 @@ export function ExcelUploader() {
               </>
             ) : (
               <>
-                <div className="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center">
-                  <Upload className="w-8 h-8 text-blue-600" />
+                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
+                  <Upload className="w-6 h-6 text-blue-600" />
                 </div>
                 <div>
-                  <p className="text-lg font-medium text-neutral-900">
+                  <p className="text-base font-medium text-neutral-900">
                     Перетащите файл с контрагентами
                   </p>
-                  <p className="text-sm text-neutral-500 mt-1">или нажмите для выбора файла</p>
+                  <p className="text-sm text-neutral-500 mt-1">или нажмите для выбора</p>
                 </div>
                 <div className="flex items-center justify-center gap-4 text-xs text-neutral-400">
                   <span className="inline-flex items-center gap-1">
@@ -287,7 +294,7 @@ export function ExcelUploader() {
             </button>
           </div>
 
-          <div className="max-h-80 overflow-auto">
+          <div className="max-h-52 overflow-auto">
             <table className="w-full text-sm">
               <thead className="bg-neutral-50 sticky top-0">
                 <tr>
@@ -397,14 +404,11 @@ export function ExcelUploader() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="mt-6 p-4 bg-neutral-50 rounded-lg">
-        <p className="text-sm text-neutral-600 font-medium mb-2">Требования к файлу:</p>
-        <ul className="text-sm text-neutral-500 space-y-1">
-          <li>• Excel: колонки с названием и ИИН/БИН (гибкие заголовки)</li>
-          <li>• Word (.docx): таблица или строки вида «Название — компания — 12 цифр БИН»</li>
-          <li>• Дополнительные колонки Excel сохраняются в карточке</li>
-        </ul>
-      </div>
+      {!parsedData && (
+        <p className="mt-2 text-xs text-neutral-500 text-center">
+          Excel: колонки название и БИН. Word: таблица или «Название — БИН».
+        </p>
+      )}
     </div>
   )
 }

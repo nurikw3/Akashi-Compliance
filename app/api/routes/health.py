@@ -30,7 +30,6 @@ async def health() -> dict[str, object]:
             "configured": configured,
             "backend": backend_label,
             "activeBackend": active_backend,
-            "redisUrl": settings.redis_url if settings.task_queue_enabled else None,
             "redisOk": redis_ok,
             "workerOk": worker_ok,
             "warning": warning,

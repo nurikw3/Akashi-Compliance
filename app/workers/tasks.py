@@ -10,7 +10,6 @@ from app.services.affiliate_tree import build_affiliate_tree
 from app.services.ai.jobs import chat_reply_for_case, generate_conclusion_for_case
 from app.services.enrichment.providers.adata import AdataProvider
 from app.services.enrichment.providers.kompra import KompraProvider
-from app.services.enrichment.providers.stub import StubProvider
 from app.services.enrichment.registry import registry
 from app.services.pipeline import process_case
 from app.workers.broker import broker
@@ -29,7 +28,6 @@ def _ensure_worker_context() -> None:
     db.init_db()
     if not registry.all():
         registry.register(AdataProvider())
-        registry.register(StubProvider())
         registry.register(KompraProvider())
     _worker_ready = True
 

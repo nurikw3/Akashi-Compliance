@@ -3,11 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.core.config import settings
-
 logger = logging.getLogger(__name__)
 from app.services.enrichment.base import BaseProvider, CompanyData
-from app.services.enrichment.providers.stub import StubProvider
 from app.services.enrichment.registry import ProviderRegistry, registry
 from app.services.enrichment.sources import (
     default_section_sources,
@@ -19,15 +16,11 @@ from app.services.enrichment.sources import (
 class EnrichmentService:
     def __init__(self, provider_registry: ProviderRegistry | None = None) -> None:
         self.registry = provider_registry or registry
-        self._stub = StubProvider()
         self.last_sources: list[str] = []
         self.last_section_sources: dict[str, str] = default_section_sources()
-        self.used_stub = False
 
     async def enrich(self, iin: str) -> tuple[CompanyData, list[str], dict[str, str]]:
-        real_providers = [
-            p for p in self.registry.available() if p.name != "stub"
-        ]
+        real_providers = self.registry.available()
         results: list[tuple[str, CompanyData]] = []
 
         if real_providers:
@@ -40,7 +33,6 @@ class EnrichmentService:
                     results.append((provider.name, result))
 
         sources = [name for name, _ in results]
-        self.used_stub = False
 
         section_maps: list[dict[str, str]] = []
 
@@ -52,12 +44,11 @@ class EnrichmentService:
                     if data.section_sources
                     else infer_section_sources_from_data(data, provider_name)
                 )
-            # Do not merge stub CompanyData — avoids fake courts/affiliates in UI.
         else:
-            merged = await self._stub.check(iin)
-            sources = ["stub"]
-            section_maps = [infer_section_sources_from_data(merged, "stub")]
-            self.used_stub = True
+            logger.warning("No enrichment data for BIN %s — returning empty payload", iin)
+            merged = CompanyData(iin=iin, raw={})
+            sources = []
+            section_maps = [default_section_sources([])]
 
         self.last_sources = sources
         self.last_section_sources = merge_section_sources(*section_maps) if section_maps else default_section_sources(sources)
@@ -67,9 +58,9 @@ class EnrichmentService:
     async def _safe_check(self, provider: BaseProvider, iin: str) -> CompanyData | None:
         try:
             result = await provider.check(iin)
-            if result is None and provider.name != "stub":
+            if result is None:
                 logger.info(
-                    "Provider %s returned no data for BIN %s; will use stub fallback",
+                    "Provider %s returned no data for BIN %s",
                     provider.name,
                     iin,
                 )
@@ -81,9 +72,7 @@ class EnrichmentService:
                 iin,
                 exc,
             )
-            if settings.use_stub_on_api_failure:
-                return None
-            raise
+            return None
 
     def merge(self, results: list[CompanyData]) -> CompanyData:
         if not results:

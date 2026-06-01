@@ -59,6 +59,7 @@ async def chat_reply_for_case(case_id: str, user_message: str) -> dict[str, Any]
 
     enriched = row.get("enriched_data") or {}
     reply, ai_mode = await AIService().chat_reply(
+        case_id=case_id,
         company_name=row["company_name"],
         iin=row["iin"],
         message=user_message,
@@ -67,6 +68,7 @@ async def chat_reply_for_case(case_id: str, user_message: str) -> dict[str, Any]
         conclusion=row.get("conclusion"),
         history=prior_history,
         data_sources=enriched.get("dataSources"),
+        lseg=enriched.get("lseg"),
     )
     assistant = db.add_chat_message(case_id=case_id, role="assistant", content=reply)
     return {"message": assistant, "aiMode": ai_mode}

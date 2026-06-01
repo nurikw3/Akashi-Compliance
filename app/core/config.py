@@ -24,7 +24,7 @@ def normalize_adata_base_url(url: str) -> str:
     return normalized
 
 
-@dataclass(frozen=True)
+@dataclass
 class Settings:
     adata_token: str = os.getenv("ADATA_TOKEN", "")
     adata_base_url: str = normalize_adata_base_url(
@@ -55,8 +55,9 @@ class Settings:
     lseg_client_id: str = os.getenv("LSEG_CLIENT_ID", "")
     lseg_client_secret: str = os.getenv("LSEG_CLIENT_SECRET", "")
     lseg_group_id: str = os.getenv("LSEG_GROUP_ID", "")
-    use_stub_on_api_failure: bool = os.getenv(
-        "USE_STUB_ON_API_FAILURE", "true"
+    suppress_enrichment_errors: bool = os.getenv(
+        "SUPPRESS_ENRICHMENT_ERRORS",
+        os.getenv("USE_STUB_ON_API_FAILURE", "false"),
     ).lower() in ("1", "true", "yes")
     database_url: str = os.getenv(
         "DATABASE_URL",
@@ -65,12 +66,22 @@ class Settings:
     sqlite_path: Path = BASE_DIR / os.getenv("SQLITE_PATH", "data/compliance.db")
     pdf_dir: Path = BASE_DIR / os.getenv("PDF_DIR", "generated-pdfs")
     api_base_url: str = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
-    cors_origins: tuple[str, ...] = (
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
+    cors_origins: tuple[str, ...] = tuple(
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000,"
+            "http://localhost:3001,http://127.0.0.1:3001",
+        ).split(",")
+        if origin.strip()
     )
+    auth_enabled: bool = os.getenv("AUTH_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    admin_username: str = os.getenv("ADMIN_USERNAME", "nurikw3")
+    admin_password: str = os.getenv("ADMIN_PASSWORD", "Ak4sh1_Nurik_2026!")
 
 
 settings = Settings()

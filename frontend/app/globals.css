@@ -166,6 +166,7 @@
   right: 8%;
   height: 1px;
   background: #cbd5e1;
+  pointer-events: none;
 }
 
 .affiliate-tree .tree-children > li::before {
@@ -177,6 +178,7 @@
   height: 1.75rem;
   background: #cbd5e1;
   transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .affiliate-tree .tree-stem {
@@ -184,4 +186,10 @@
   height: 1.25rem;
   background: #cbd5e1;
   flex-shrink: 0;
+  pointer-events: none;
+}
+
+.affiliate-tree .tree-card {
+  position: relative;
+  z-index: 1;
 }

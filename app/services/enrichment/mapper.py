@@ -196,6 +196,29 @@ def _is_adata_section(sources: dict[str, str], section: str) -> bool:
     return sources.get(section) == "adata"
 
 
+_SANCTION_FLAG_KEYWORDS = (
+    "террор",
+    "экстрем",
+    "санкц",
+    "розыск",
+    "запрещ",
+    "лжепредпр",
+    "педофил",
+    "банкрот",
+)
+
+
+def _sanction_related_flag_labels(
+    status_flags: list[str], risk_flags: list[str]
+) -> list[str]:
+    combined = list(status_flags) + list(risk_flags)
+    return [
+        flag
+        for flag in combined
+        if any(word in flag.lower() for word in _SANCTION_FLAG_KEYWORDS)
+    ]
+
+
 def company_data_to_enrichment(
     company_name: str, data: CompanyData
 ) -> dict[str, Any]:
@@ -261,9 +284,12 @@ def company_data_to_enrichment(
         _apply_courts_from_data(enrichment, data)
 
     if _is_adata_section(sources, "sanctions"):
-        all_flags = enrichment["statusFlags"] + enrichment["riskFlags"]
         enrichment["sanctions"]["isOnList"] = bool(data.in_sanctions_list)
-        enrichment["sanctions"]["lists"] = all_flags if all_flags else []
+        enrichment["sanctions"]["lists"] = list(enrichment["sanctions"]["lists"])
+        if data.in_sanctions_list:
+            enrichment["sanctions"]["lists"] = _sanction_related_flag_labels(
+                enrichment["statusFlags"], enrichment["riskFlags"]
+            )
         enrichment["sanctions"]["statusFlags"] = enrichment["statusFlags"]
         enrichment["sanctions"]["riskFlags"] = enrichment["riskFlags"]
 

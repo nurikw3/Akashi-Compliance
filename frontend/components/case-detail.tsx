@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, type RefObject } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import {
   Building2,
   Gavel,
@@ -22,11 +23,15 @@ import {
 import { downloadCaseReport, fetchAiStatus, rescreenAllWithLseg } from '@/lib/api'
 import { useCases } from '@/lib/cases-context'
 import { AffiliatesGraph } from '@/components/affiliates-graph'
+import { LoadingGif } from '@/components/loading-gif'
 import { MarkdownContent } from '@/components/markdown-content'
 import { dataSourceLabel, sectionSource } from '@/lib/data-source-label'
-import type { Case, DataSourceKind, ScoreMetric, LsegData } from '@/lib/types'
+import { caseDisplayName, formatPersonField } from '@/lib/case-display'
+import type { Case, DataSourceKind, ScoreMetric, LsegData, LsegSanctionHit, LsegExtendedEntity } from '@/lib/types'
 
 type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'scoring' | 'lseg'
+
+const VALID_TABS: Tab[] = ['data', 'documents', 'assessment', 'chat', 'scoring', 'lseg']
 
 function SectionHeading({
   icon: Icon,
@@ -54,15 +59,12 @@ function formatCurrency(amount: number) {
 
 function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => void }) {
   const { enrichment, dataSources } = caseData
+  const displayName = caseDisplayName(caseData)
   const src = (section: Parameters<typeof sectionSource>[1]) =>
     sectionSource(dataSources, section)
 
   if (!enrichment) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-8 h-8 text-neutral-400 animate-spin" />
-      </div>
-    )
+    return <LoadingGif message="Загружаем данные контрагента…" />
   }
 
   return (
@@ -70,10 +72,14 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
       {/* Affiliates Graph - Main Feature */}
       <AffiliatesGraph
         caseId={caseData.id}
-        mainCompany={{ name: caseData.name, iinBin: caseData.iinBin }}
+        mainCompany={{ name: displayName, iinBin: caseData.iinBin }}
         affiliateTree={caseData.affiliateTree}
         source={src('graph')}
         onTreeUpdated={onRefresh}
+        lseg={caseData.lseg}
+        lsegExtended={caseData.lsegExtended}
+        affiliateProfiles={caseData.affiliateProfiles}
+        beneficiary={caseData.beneficiary}
       />
 
       {/* Company Info */}
@@ -99,7 +105,7 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           </div>
           <div>
             <p className="text-neutral-500">Директор</p>
-            <p className="text-neutral-900">{enrichment.companyInfo.director}</p>
+            <p className="text-neutral-900">{formatPersonField(enrichment.companyInfo.director)}</p>
           </div>
           <div>
             <p className="text-neutral-500">Количество сотрудников</p>
@@ -232,9 +238,10 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
             {enrichment.courts.note}
           </p>
         )}
-        {src('courts') === 'stub' ? (
-          <p className="text-sm text-neutral-500">Данные из Adata не получены.</p>
-        ) : (
+        {src('courts') === 'adata' ||
+        enrichment.courts.activeCases > 0 ||
+        enrichment.courts.completedCases > 0 ||
+        enrichment.courts.cases.length > 0 ? (
         <>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mb-4">
           <div>
@@ -275,6 +282,8 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           <p className="text-sm text-neutral-500">Судебных дел не зафиксировано.</p>
         )}
         </>
+        ) : (
+          <p className="text-sm text-neutral-500">Нет данных</p>
         )}
       </div>
 
@@ -286,9 +295,8 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           title="Факторы риска (riskFactor)"
           source={src('sanctions')}
         />
-        {src('sanctions') === 'stub' ? (
-          <p className="text-sm text-neutral-500">Данные из Adata не получены.</p>
-        ) : (enrichment.riskFlags?.length ?? 0) > 0 || enrichment.sanctions.isOnList ? (
+        {src('sanctions') === 'adata' &&
+        ((enrichment.riskFlags?.length ?? 0) > 0 || enrichment.sanctions.isOnList) ? (
           <ul className="space-y-2">
             {(enrichment.riskFlags?.length
               ? enrichment.riskFlags
@@ -302,10 +310,12 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
               </li>
             ))}
           </ul>
-        ) : (
+        ) : src('sanctions') === 'adata' ? (
           <div className="bg-green-50 border border-green-200 rounded-lg p-4">
             <p className="text-green-700">Критические факторы риска не выявлены</p>
           </div>
+        ) : (
+          <p className="text-sm text-neutral-500">Нет данных</p>
         )}
       </div>
 
@@ -439,11 +449,7 @@ function AssessmentTab({ caseData }: { caseData: Case }) {
   const conclusionSource = sectionSource(dataSources, 'conclusion')
 
   if (!assessment) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-8 h-8 text-neutral-400 animate-spin" />
-      </div>
-    )
+    return <LoadingGif message="Готовим оценку риска…" />
   }
 
   const riskConfig = {
@@ -674,6 +680,16 @@ const METRIC_LABELS: Record<string, string> = {
   affiliate_risk: 'Риск аффилиатов',
 }
 
+const METRIC_HINTS: Record<string, string> = {
+  sanctions: 'LSEG WC1 + критические флаги КЗ (не налоговый риск)',
+  courts: 'Судебные дела компании и руководителя (Adata)',
+  taxes: 'Задолженность и степень налогового риска (Adata)',
+  legal_status: 'Регистрация, ликвидация, финансовые проблемы',
+  pep: 'Политически значимые лица (LSEG)',
+  adverse_media: 'Негативные публикации (LSEG Media-Check)',
+  affiliate_risk: 'Риск по дереву связей',
+}
+
 const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
   lseg: { label: 'LSEG WC1', cls: 'bg-purple-100 text-purple-700' },
   adata: { label: 'Adata', cls: 'bg-blue-100 text-blue-700' },
@@ -762,7 +778,10 @@ function ScoringTab({ caseData }: { caseData: Case }) {
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <p className="text-xs text-neutral-500 mt-1">{m.reason}</p>
+              {METRIC_HINTS[m.metric] && (
+                <p className="text-xs text-neutral-400 mt-0.5">{METRIC_HINTS[m.metric]}</p>
+              )}
+              <p className="text-xs text-neutral-600 mt-1 leading-relaxed">{m.reason}</p>
             </div>
           )
         })}
@@ -773,10 +792,313 @@ function ScoringTab({ caseData }: { caseData: Case }) {
 
 // ── LSEG Tab ──────────────────────────────────────────────────────────────────
 
-function LsegTab({ caseData }: { caseData: Case }) {
-  const lseg: LsegData | null | undefined = caseData.lseg
+const STRENGTH_CONFIG: Record<string, { cls: string; label: string }> = {
+  EXACT:  { cls: 'bg-red-100 text-red-700 border border-red-200', label: 'EXACT' },
+  STRONG: { cls: 'bg-orange-100 text-orange-700 border border-orange-200', label: 'STRONG' },
+  MEDIUM: { cls: 'bg-amber-100 text-amber-700 border border-amber-200', label: 'MEDIUM' },
+  WEAK:   { cls: 'bg-neutral-100 text-neutral-600 border border-neutral-200', label: 'WEAK' },
+}
 
-  if (!lseg) {
+const CATEGORY_KEYWORDS = ['Special Interest', 'Interdicted', 'Sanctioned Entities', 'Sanctioned (50%']
+
+const JURISDICTION_TAG_STYLES: Record<string, string> = {
+  '🇺🇸 США': 'bg-red-100 text-red-700 border border-red-200',
+  '🇬🇧 ВЕЛИКОБРИТАНИЯ': 'bg-amber-100 text-amber-700 border border-amber-200',
+  '🇪🇺 ЕВРОСОЮЗ': 'bg-amber-100 text-amber-700 border border-amber-200',
+  '🇰🇿 КАЗАХСТАН / СНГ': 'bg-sky-100 text-sky-700 border border-sky-200',
+  '🌐 МЕЖДУНАРОДНЫЕ И ПРОЧИЕ': 'bg-neutral-100 text-neutral-700 border border-neutral-200',
+  '🌐 КАТЕГОРИИ': 'bg-neutral-100 text-neutral-700 border border-neutral-200',
+}
+
+function groupSanctionsByJurisdiction(
+  sanctionLists: string[],
+  _rawSources?: string[],
+): Record<string, string[]> {
+  const groups: Record<string, string[]> = {}
+
+  const JURISDICTION_MAP: [string, string, string[]][] = [
+    ['🇺🇸 США', 'us', ['OFAC', 'BIS', 'SDN', 'SECON', 'CAATSA', 'Russia Specially Designated', 'Russia SDR']],
+    ['🇬🇧 ВЕЛИКОБРИТАНИЯ', 'uk', ['UK HM Treasury', 'UKSANC', 'UKHMT']],
+    ['🇪🇺 ЕВРОСОЮЗ', 'eu', ['EU', 'Russia Restrictive Measures', 'M:2C9']],
+    ['🇰🇿 КАЗАХСТАН / СНГ', 'kz', ['KZKFM', 'KYSANC', 'KGFIU', 'UZDCEC', 'M:1UY']],
+    ['🌐 МЕЖДУНАРОДНЫЕ И ПРОЧИЕ', 'intl', []],
+  ]
+
+  for (const list of sanctionLists || []) {
+    let placed = false
+    for (const [label, , keywords] of JURISDICTION_MAP.slice(0, -1)) {
+      if (keywords.some((kw) => list.includes(kw))) {
+        groups[label] = [...(groups[label] || []), list]
+        placed = true
+        break
+      }
+    }
+    if (!placed) {
+      const isCategory = CATEGORY_KEYWORDS.some((kw) => list.includes(kw))
+      const intlLabel = isCategory ? '🌐 КАТЕГОРИИ' : '🌐 МЕЖДУНАРОДНЫЕ И ПРОЧИЕ'
+      groups[intlLabel] = [...(groups[intlLabel] || []), list]
+    }
+  }
+  return groups
+}
+
+function collectEntitySanctionLists(entity: LsegExtendedEntity): string[] {
+  const lists = new Set<string>()
+  for (const l of entity.sanctionLists || []) lists.add(l)
+  for (const hit of entity.hits) {
+    for (const l of hit.sanctionLists || hit.sourceCategories || []) lists.add(l)
+  }
+  return [...lists]
+}
+
+function collectAllSanctionLists(
+  entities: LsegExtendedEntity[],
+  lseg?: LsegData | null,
+): string[] {
+  const lists = new Set<string>()
+  for (const e of entities.filter((x) => x.isOnSanctionList || x.hits.some((h) => h.isSanction))) {
+    for (const l of collectEntitySanctionLists(e)) lists.add(l)
+  }
+  if (lseg?.sanctions?.isOnList || (lseg?.sanctions?.hits?.length ?? 0) > 0) {
+    for (const l of lseg?.sanctions?.matchedLists || []) lists.add(l)
+    for (const hit of lseg?.sanctions?.hits || []) {
+      for (const l of hit.sanctionLists || hit.sourceCategories || []) lists.add(l)
+    }
+  }
+  return [...lists]
+}
+
+function computeSanctionSummaryStats(
+  entities: LsegExtendedEntity[],
+  lseg?: LsegData | null,
+) {
+  const allLists = collectAllSanctionLists(entities, lseg)
+  const has50Rule = allLists.some((l) => /50\s*%|50% Rule/i.test(l))
+
+  const jurisdictionLabels: string[] = []
+  const checks: [string, string[]][] = [
+    ['США', ['OFAC', 'BIS', 'SDN', 'SECON', 'CAATSA', 'Russia Specially Designated', 'Russia SDR']],
+    ['ЕС', ['EU', 'Russia Restrictive Measures', 'M:2C9']],
+    ['UK', ['UK HM Treasury', 'UKSANC', 'UKHMT', 'UK 50%']],
+    ['КЗ', ['KZKFM', 'KYSANC', 'KGFIU']],
+    ['TR', ['TRMASAK']],
+    ['UZ', ['UZDCEC']],
+  ]
+  for (const [label, keywords] of checks) {
+    if (allLists.some((l) => keywords.some((kw) => l.includes(kw)))) {
+      jurisdictionLabels.push(label)
+    }
+  }
+
+  return {
+    listCount: allLists.length,
+    jurisdictionCount: jurisdictionLabels.length,
+    jurisdictionLabels: jurisdictionLabels.join(', ') || '—',
+    has50Rule,
+  }
+}
+
+function uniqueSanctionListLabels(lists: string[]): string[] {
+  return [...new Set((lists || []).map((l) => l.trim()).filter(Boolean))]
+}
+
+function JurisdictionSanctionGroups({ lists }: { lists: string[] }) {
+  const groups = groupSanctionsByJurisdiction(uniqueSanctionListLabels(lists))
+  const order = [
+    '🇺🇸 США',
+    '🇪🇺 ЕВРОСОЮЗ',
+    '🇬🇧 ВЕЛИКОБРИТАНИЯ',
+    '🇰🇿 КАЗАХСТАН / СНГ',
+    '🌐 КАТЕГОРИИ',
+    '🌐 МЕЖДУНАРОДНЫЕ И ПРОЧИЕ',
+  ]
+
+  return (
+    <div className="space-y-4 mt-4">
+      {order
+        .filter((label) => (groups[label]?.length ?? 0) > 0)
+        .map((label) => (
+          <div key={label}>
+            <p className="text-xs font-semibold text-neutral-600 uppercase tracking-wide mb-2">{label}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {groups[label]!.map((tag, i) => (
+                <span
+                  key={i}
+                  className={`text-xs px-2.5 py-1 rounded-full font-medium ${JURISDICTION_TAG_STYLES[label] || JURISDICTION_TAG_STYLES['🌐 МЕЖДУНАРОДНЫЕ И ПРОЧИЕ']}`}
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+    </div>
+  )
+}
+
+function SanctionEntityCard({
+  entity,
+  isFocused,
+  focusRef,
+}: {
+  entity: LsegExtendedEntity
+  isFocused?: boolean
+  focusRef?: RefObject<HTMLDivElement | null>
+}) {
+  const lists = collectEntitySanctionLists(entity)
+  const isCritical = entity.isOnSanctionList
+
+  return (
+    <div
+      ref={focusRef}
+      className={`rounded-xl border p-5 ${
+        isFocused
+          ? 'ring-2 ring-blue-500 border-blue-300 bg-red-50'
+          : isCritical
+            ? 'bg-red-50 border-red-200'
+            : 'bg-neutral-50 border-neutral-200'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3 mb-1">
+        <p className="text-base font-semibold text-neutral-900">{entity.name}</p>
+        {isCritical && (
+          <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-medium bg-red-100 text-red-700 border border-red-200 shrink-0">
+            <AlertTriangle className="w-3 h-3" />
+            Критический
+          </span>
+        )}
+      </div>
+      {entity.role && <p className="text-xs text-neutral-500 mb-1">{entity.role}</p>}
+      {lists.length > 0 ? (
+        <JurisdictionSanctionGroups lists={lists} />
+      ) : (
+        <p className="text-sm text-neutral-500 mt-3">Санкционные списки не указаны</p>
+      )}
+    </div>
+  )
+}
+
+function SanctionSummaryHeader({
+  sanctionedCount,
+  stats,
+}: {
+  sanctionedCount: number
+  stats: ReturnType<typeof computeSanctionSummaryStats>
+}) {
+  return (
+    <div className="rounded-xl bg-white border border-neutral-200 overflow-hidden">
+      <div className="flex items-center gap-3 px-5 py-4 bg-red-600 text-white">
+        <AlertTriangle className="w-5 h-5 shrink-0" />
+        <p className="text-sm font-semibold">
+          Критический риск — {sanctionedCount} аффилиат
+          {sanctionedCount === 1 ? '' : sanctionedCount < 5 ? 'а' : 'ов'} под международными санкциями
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-neutral-200">
+        <div className="px-5 py-4 bg-red-50">
+          <p className="text-xs text-neutral-500 mb-1">Санкционных списков</p>
+          <p className="text-2xl font-bold text-red-700">
+            {stats.listCount >= 40 ? '40+' : stats.listCount || '—'}
+          </p>
+          {sanctionedCount > 0 && (
+            <p className="text-xs text-neutral-500 mt-0.5">по {sanctionedCount} аффилиатам</p>
+          )}
+        </div>
+        <div className="px-5 py-4 bg-neutral-50">
+          <p className="text-xs text-neutral-500 mb-1">Юрисдикций</p>
+          <p className="text-2xl font-bold text-neutral-900">{stats.jurisdictionCount || '—'}</p>
+          <p className="text-xs text-neutral-500 mt-0.5">{stats.jurisdictionLabels}</p>
+        </div>
+        <div className="px-5 py-4 bg-neutral-50">
+          <p className="text-xs text-neutral-500 mb-1">Правило 50%</p>
+          <p className={`text-2xl font-bold ${stats.has50Rule ? 'text-amber-700' : 'text-neutral-400'}`}>
+            {stats.has50Rule ? 'Да' : 'Нет'}
+          </p>
+          {stats.has50Rule && (
+            <p className="text-xs text-neutral-500 mt-0.5">OFAC и UK HM Treasury</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PepHitCard({ hit }: { hit: LsegSanctionHit }) {
+  const strength = hit.matchStrength ? STRENGTH_CONFIG[hit.matchStrength] ?? STRENGTH_CONFIG.WEAK : null
+  const lists = hit.sanctionLists && hit.sanctionLists.length > 0 ? hit.sanctionLists : hit.sourceCategories ?? []
+
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-neutral-900">
+            {hit.submittedName || hit.primaryName || '—'}
+          </p>
+          {hit.primaryName && hit.primaryName !== hit.submittedName && (
+            <p className="text-xs text-neutral-500 mt-0.5">WC1: {hit.primaryName}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {strength && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${strength.cls}`}>
+              {strength.label}
+            </span>
+          )}
+          {hit.matchScore != null && (
+            <span className="text-xs font-mono bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5 text-amber-800">
+              {hit.matchScore.toFixed(1)}%
+            </span>
+          )}
+        </div>
+      </div>
+      {lists.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {lists.map((l, i) => (
+            <span
+              key={i}
+              className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 border border-amber-200"
+            >
+              {l}
+            </span>
+          ))}
+        </div>
+      )}
+      {(hit.countryNames ?? []).length > 0 && (
+        <p className="text-xs text-neutral-600">
+          <span className="font-medium text-neutral-700">Страна: </span>
+          {hit.countryNames!.join(', ')}
+        </p>
+      )}
+      {(hit.aliases ?? []).length > 0 && (
+        <p className="text-xs text-neutral-500">
+          <span className="font-medium">Псевдонимы: </span>
+          {hit.aliases!.join(' · ')}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: string | null }) {
+  const lseg: LsegData | null | undefined = caseData.lseg
+  const lsegExtended = caseData.lsegExtended
+  const focusRef = useRef<HTMLDivElement>(null)
+  const normalizedFocus = focusEntity?.trim().toLowerCase() ?? ''
+
+  const sanctionedAffiliates: LsegExtendedEntity[] = lsegExtended
+    ? Object.values(lsegExtended).filter((e) => e.isOnSanctionList)
+    : []
+
+  const allAffiliatesScreened: LsegExtendedEntity[] = lsegExtended
+    ? Object.values(lsegExtended)
+    : []
+
+  useEffect(() => {
+    if (!normalizedFocus || !focusRef.current) return
+    focusRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [normalizedFocus, allAffiliatesScreened.length])
+
+  if (!lseg && allAffiliatesScreened.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-neutral-200 p-8 text-center">
         <Globe className="w-10 h-10 text-neutral-300 mx-auto mb-3" />
@@ -795,136 +1117,244 @@ function LsegTab({ caseData }: { caseData: Case }) {
     return 'bg-emerald-100 text-emerald-700 border border-emerald-200'
   }
 
+  const summaryStats = computeSanctionSummaryStats(sanctionedAffiliates, lseg)
+  const entitiesWithSanctions = allAffiliatesScreened.filter(
+    (e) => e.isOnSanctionList || e.hits.some((h) => h.isSanction),
+  )
+  const cleanEntities = allAffiliatesScreened.filter(
+    (e) => !e.isOnSanctionList && !e.hits.some((h) => h.isSanction || h.isPep),
+  )
+  const pepOnlyEntities = allAffiliatesScreened.filter(
+    (e) => !e.isOnSanctionList && !e.hits.some((h) => h.isSanction) && e.hits.some((h) => h.isPep),
+  )
+
   return (
     <div className="space-y-4">
-      {/* Meta */}
-      <div className="bg-white rounded-xl border border-neutral-200 p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <ShieldCheck className="w-5 h-5 text-purple-600" />
-          <h3 className="font-semibold text-neutral-900">LSEG World-Check One</h3>
-        </div>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div>
-            <p className="text-neutral-500">Дата скрининга</p>
-            <p className="font-medium">{new Date(lseg.screenedAt).toLocaleString('ru-RU')}</p>
-          </div>
-          <div>
-            <p className="text-neutral-500">Рейтинг WC1</p>
-            <p className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${riskBadge(lseg.wc1Rating)}`}>
-              {lseg.wc1Rating || 'N/A'}
-            </p>
-          </div>
-        </div>
-      </div>
+      {sanctionedAffiliates.length > 0 && (
+        <SanctionSummaryHeader
+          sanctionedCount={sanctionedAffiliates.length}
+          stats={summaryStats}
+        />
+      )}
 
-      {/* Sanctions */}
-      <div className="bg-white rounded-xl border border-neutral-200 p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-neutral-900">Санкционные списки</h3>
-          <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${lseg.sanctions.isOnList ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
-            {lseg.sanctions.isOnList ? 'СОВПАДЕНИЕ' : 'Чисто'}
-          </span>
+      {entitiesWithSanctions.length > 0 && (
+        <div className="space-y-4">
+          {entitiesWithSanctions.map((entity, i) => {
+            const isFocused =
+              normalizedFocus.length > 0 &&
+              entity.name.trim().toLowerCase() === normalizedFocus
+            return (
+              <SanctionEntityCard
+                key={i}
+                entity={entity}
+                isFocused={isFocused}
+                focusRef={isFocused ? focusRef : undefined}
+              />
+            )
+          })}
         </div>
-        {lseg.sanctions.isOnList ? (
-          <div className="space-y-3">
-            {lseg.sanctions.matchedLists.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {lseg.sanctions.matchedLists.map((list) => (
-                  <span key={list} className="px-2 py-0.5 bg-red-50 border border-red-200 rounded text-xs text-red-700 font-medium">
-                    {list}
-                  </span>
+      )}
+
+      {lseg && (
+        <>
+          <div className="rounded-xl bg-white border border-neutral-200 p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <ShieldCheck className="w-5 h-5 text-purple-600" />
+              <h3 className="font-semibold text-neutral-900">LSEG World-Check One</h3>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-neutral-500">Дата скрининга</p>
+                <p className="font-medium text-neutral-900">
+                  {new Date(lseg.screenedAt).toLocaleString('ru-RU')}
+                </p>
+              </div>
+              <div>
+                <p className="text-neutral-500">Рейтинг WC1</p>
+                <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${riskBadge(lseg.wc1Rating)}`}>
+                  {lseg.wc1Rating || 'N/A'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {(lseg.sanctions.isOnList ||
+            lseg.sanctions.hasWatchlistHits ||
+            (lseg.sanctions.hits ?? []).length > 0) && (
+            <div className="rounded-xl bg-white border border-neutral-200 p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-neutral-900">Санкционные списки (компания)</h3>
+                <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
+                  lseg.sanctions.isOnList
+                    ? 'bg-red-100 text-red-700 border border-red-200'
+                    : 'bg-amber-100 text-amber-700 border border-amber-200'
+                }`}>
+                  {lseg.sanctions.isOnList
+                    ? 'САНКЦИИ'
+                    : (lseg.sanctions.hits ?? []).length > 0
+                      ? 'ПРОВЕРИТЬ'
+                      : 'ЧИСТО'}
+                </span>
+              </div>
+              {/^бин\s*\d{12}$/i.test((lseg.screenedName || '').trim()) && (
+                <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+                  Скрининг выполнялся по строке «{lseg.screenedName}», а не по юридическому названию —
+                  WC1 мог подобрать посторонние совпадения по слову BIN. Перезапустите LSEG-скрининг
+                  после обновления названия компании.
+                </p>
+              )}
+              <JurisdictionSanctionGroups lists={lseg.sanctions.matchedLists || []} />
+              {(lseg.sanctions.hits ?? []).length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <p className="text-xs font-medium text-neutral-600">
+                    Совпадения WC1 ({lseg.sanctions.hits.length})
+                  </p>
+                  {lseg.sanctions.hits.slice(0, 8).map((hit, i) => (
+                    <PepHitCard key={hit.resultId || i} hit={hit} />
+                  ))}
+                  {lseg.sanctions.hits.length > 8 && (
+                    <p className="text-xs text-neutral-500">
+                      и ещё {lseg.sanctions.hits.length - 8} записей…
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {!lseg.sanctions.isOnList && (lseg.sanctions.hits ?? []).length === 0 && (
+            <div className="rounded-xl bg-white border border-neutral-200 p-5">
+              <p className="text-sm text-emerald-700">Совпадений в санкционных списках не обнаружено.</p>
+            </div>
+          )}
+
+          <div className="rounded-xl bg-amber-50 border border-amber-200 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="font-semibold text-neutral-900">PEP-скрининг (физические лица)</h3>
+                <p className="text-xs text-neutral-500 mt-0.5">Директор и руководство компании</p>
+              </div>
+              <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
+                lseg.pep.isHit
+                  ? 'bg-amber-100 text-amber-700 border border-amber-200'
+                  : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+              }`}>
+                {lseg.pep.isHit ? 'СОВПАДЕНИЕ' : 'Чисто'}
+              </span>
+            </div>
+            {lseg.pep.isHit ? (
+              <div className="space-y-3">
+                {lseg.pep.individuals.map((ind, i) => (
+                  <PepHitCard key={i} hit={ind} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-500">Связей с политически значимыми лицами не обнаружено.</p>
+            )}
+          </div>
+
+          <div className="rounded-xl bg-white border border-neutral-200 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-neutral-900">Adverse Media</h3>
+              {lseg.adverseMedia.negativeCount > 0 && (
+                <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200">
+                  {lseg.adverseMedia.negativeCount} негативных
+                </span>
+              )}
+            </div>
+            {lseg.adverseMedia.articles.length === 0 ? (
+              <p className="text-sm text-neutral-500">Негативных публикаций не обнаружено.</p>
+            ) : (
+              <div className="space-y-2">
+                {lseg.adverseMedia.articles.map((a) => (
+                  <div key={a.articleId} className="flex items-start justify-between gap-3 p-3 rounded-lg bg-neutral-50 border border-neutral-200">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-neutral-900 line-clamp-2">{a.headline}</p>
+                      <p className="text-xs text-neutral-500 mt-0.5">{a.publicationDate}</p>
+                      {a.categories.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {a.categories.map((cat) => (
+                            <span key={cat} className="text-xs bg-neutral-100 rounded px-1.5 py-0.5 text-neutral-600">{cat}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      {a.risk && (
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${riskBadge(a.risk)}`}>
+                          {a.risk}
+                        </span>
+                      )}
+                      {a.url && (
+                        <a href={a.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">
+                          Источник →
+                        </a>
+                      )}
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
-            {lseg.sanctions.hits.map((hit, i) => (
-              <div key={i} className="text-sm text-neutral-700 bg-red-50 border border-red-100 rounded-lg p-3">
-                <p className="font-medium">{hit.primaryName}</p>
-                <p className="text-xs text-neutral-500 mt-0.5">{hit.sources.join(' · ')}</p>
-              </div>
-            ))}
           </div>
-        ) : (
-          <p className="text-sm text-neutral-500">Совпадений в санкционных списках не обнаружено.</p>
-        )}
-      </div>
+        </>
+      )}
 
-      {/* PEP */}
-      <div className="bg-white rounded-xl border border-neutral-200 p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-neutral-900">PEP-скрининг (физические лица)</h3>
-          <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${lseg.pep.isHit ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-            {lseg.pep.isHit ? 'СОВПАДЕНИЕ' : 'Чисто'}
-          </span>
-        </div>
-        {lseg.pep.isHit ? (
-          lseg.pep.individuals.map((ind, i) => (
-            <div key={i} className="text-sm text-neutral-700 bg-amber-50 border border-amber-100 rounded-lg p-3 mb-2">
-              <p className="font-medium">{ind.primaryName}</p>
-              <p className="text-xs text-neutral-500 mt-0.5">{ind.categories.join(', ')}</p>
+      {pepOnlyEntities.length > 0 && (
+        <div className="rounded-xl bg-amber-50 border border-amber-200 p-5 space-y-3">
+          <h3 className="font-semibold text-neutral-900">PEP среди аффилиатов</h3>
+          {pepOnlyEntities.map((entity, i) => (
+            <div key={i}>
+              <p className="text-sm font-medium text-neutral-800 mb-2">{entity.name}</p>
+              {entity.hits.filter((h) => h.isPep).map((hit, j) => (
+                <PepHitCard key={j} hit={hit} />
+              ))}
             </div>
-          ))
-        ) : (
-          <p className="text-sm text-neutral-500">Связей с политически значимыми лицами не обнаружено.</p>
-        )}
-      </div>
-
-      {/* Adverse Media */}
-      <div className="bg-white rounded-xl border border-neutral-200 p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-neutral-900">Adverse Media</h3>
-          {lseg.adverseMedia.negativeCount > 0 && (
-            <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700">
-              {lseg.adverseMedia.negativeCount} негативных
-            </span>
-          )}
+          ))}
         </div>
-        {lseg.adverseMedia.articles.length === 0 ? (
-          <p className="text-sm text-neutral-500">Негативных публикаций не обнаружено.</p>
-        ) : (
+      )}
+
+      {cleanEntities.length > 0 && (
+        <div className="rounded-xl bg-white border border-neutral-200 p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Globe className="w-5 h-5 text-blue-600" />
+            <h3 className="font-semibold text-neutral-900">Чистые аффилиаты ({cleanEntities.length})</h3>
+          </div>
           <div className="space-y-2">
-            {lseg.adverseMedia.articles.map((a) => (
-              <div key={a.articleId} className="flex items-start justify-between gap-3 p-3 rounded-lg bg-neutral-50 border border-neutral-100">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-neutral-900 line-clamp-2">{a.headline}</p>
-                  <p className="text-xs text-neutral-500 mt-0.5">{a.publicationDate}</p>
-                  {a.categories.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {a.categories.map((cat) => (
-                        <span key={cat} className="text-xs bg-neutral-100 rounded px-1.5 py-0.5 text-neutral-600">{cat}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="flex flex-col items-end gap-1 shrink-0">
-                  {a.risk && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${riskBadge(a.risk)}`}>
-                      {a.risk}
-                    </span>
-                  )}
-                  {a.url && (
-                    <a href={a.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">
-                      Источник →
-                    </a>
-                  )}
-                </div>
+            {cleanEntities.map((entity, i) => (
+              <div key={i} className="flex items-center justify-between text-sm py-2 border-b border-neutral-100 last:border-0">
+                <span className="text-neutral-700">{entity.name}</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                  Чисто
+                </span>
               </div>
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }
 
 export function CaseDetail({ caseId }: { caseId: string }) {
+  const searchParams = useSearchParams()
   const { getCase, refreshCase, apiConnected } = useCases()
   const [activeTab, setActiveTab] = useState<Tab>('data')
+  const [focusEntity, setFocusEntity] = useState<string | null>(null)
   const [reportLoading, setReportLoading] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
   const [loadingCase, setLoadingCase] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
 
   const caseData = getCase(caseId)
+
+  useEffect(() => {
+    const tab = searchParams.get('tab')
+    if (tab && VALID_TABS.includes(tab as Tab)) {
+      setActiveTab(tab as Tab)
+    }
+    const entity = searchParams.get('entity')
+    setFocusEntity(entity)
+  }, [searchParams])
 
   useEffect(() => {
     if (caseData || !apiConnected) return
@@ -946,11 +1376,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
   }, [caseId, caseData, apiConnected, refreshCase])
 
   if (loadingCase || (!caseData && apiConnected && !loadFailed)) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-8 h-8 text-neutral-400 animate-spin" />
-      </div>
-    )
+    return <LoadingGif message="Загружаем дело…" />
   }
 
   if (!caseData) {
@@ -977,6 +1403,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
   }
 
   const risk = caseData.riskLevel ? riskConfig[caseData.riskLevel] : null
+  const displayName = caseDisplayName(caseData)
 
   const handleDownloadReport = async () => {
     setReportError(null)
@@ -997,7 +1424,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-2xl font-semibold text-neutral-900">{caseData.name}</h1>
+              <h1 className="text-2xl font-semibold text-neutral-900">{displayName}</h1>
               {risk && (
                 <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${risk.bg} ${risk.text}`}>
                   <span className={`w-2 h-2 rounded-full ${risk.dot}`} />
@@ -1010,12 +1437,21 @@ export function CaseDetail({ caseId }: { caseId: string }) {
                   {caseData.totalScore.toFixed(1)} / 100
                 </span>
               )}
-              {caseData.lseg && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
-                  <ShieldCheck className="w-3 h-3" />
-                  LSEG WC1
-                </span>
-              )}
+              {caseData.lseg && (() => {
+                const extEntities = caseData.lsegExtended ? Object.values(caseData.lsegExtended) : []
+                const hasSanctionedAffiliate = extEntities.some(e => e.isOnSanctionList)
+                return hasSanctionedAffiliate ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-600 text-white">
+                    <AlertTriangle className="w-3 h-3" />
+                    САНКЦИИ АФФИЛИАТ
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+                    <ShieldCheck className="w-3 h-3" />
+                    LSEG WC1
+                  </span>
+                )
+              })()}
             </div>
             <p className="text-neutral-500">
               <span className="font-mono">{caseData.iinBin}</span>
@@ -1028,11 +1464,18 @@ export function CaseDetail({ caseId }: { caseId: string }) {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <Link
+              href={`/cases/${caseData.id}/full-report`}
+              className="flex items-center gap-2 px-4 py-2.5 bg-red-50 hover:bg-red-100 text-red-800 border border-red-200 text-sm font-medium rounded-lg transition-colors"
+            >
+              <FileText className="w-4 h-4" />
+              Полный отчёт
+            </Link>
+            <Link
               href={`/cases/${caseData.id}/report`}
               className="flex items-center gap-2 px-4 py-2.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm font-medium rounded-lg transition-colors"
             >
               <FileText className="w-4 h-4" />
-              Отчёт
+              Отчёт PDF
             </Link>
             <button
               type="button"
@@ -1077,7 +1520,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
         <DataTab caseData={caseData} onRefresh={() => refreshCase(caseId)} />
       )}
       {activeTab === 'scoring' && <ScoringTab caseData={caseData} />}
-      {activeTab === 'lseg' && <LsegTab caseData={caseData} />}
+      {activeTab === 'lseg' && <LsegTab caseData={caseData} focusEntity={focusEntity} />}
       {activeTab === 'documents' && <DocumentsTab caseData={caseData} />}
       {activeTab === 'assessment' && <AssessmentTab caseData={caseData} />}
       {activeTab === 'chat' && <ChatTab caseData={caseData} />}

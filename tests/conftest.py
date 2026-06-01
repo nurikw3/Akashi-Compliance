@@ -36,6 +36,7 @@ def _ensure_test_database() -> None:
 
 _test_url = _test_database_url()
 os.environ["DATABASE_URL"] = _test_url
+os.environ["AUTH_ENABLED"] = "false"
 
 try:
     _ensure_test_database()

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.enrichment.person import normalize_person_name
+
 # status + basic express indicators
 _STATUS_BOOL_FLAGS: tuple[tuple[str, str], ...] = (
     ("pseudo_company", "В реестре лжепредприятий"),
@@ -378,6 +380,40 @@ def _has_critical_risk(risk_flags: list[str], status_flags: list[str]) -> bool:
     return any(word in combined for word in critical_keywords)
 
 
+def _resolve_director_name(info_data: dict[str, Any]) -> str | None:
+    """Prefer ``basic.fullname_director``; never treat risk ``head`` blob as a name."""
+    basic = info_data.get("basic") if isinstance(info_data.get("basic"), dict) else {}
+
+    found = normalize_person_name(basic.get("fullname_director"))
+    if found:
+        return found
+
+    director_field = basic.get("director")
+    if isinstance(director_field, str):
+        found = normalize_person_name(director_field)
+        if found:
+            return found
+
+    diagram = info_data.get("connectedDiagram")
+    if isinstance(diagram, dict):
+        by_head = diagram.get("affiliation_by_head")
+        if isinstance(by_head, dict):
+            found = normalize_person_name(by_head.get("head_name"))
+            if found:
+                return found
+
+    risk = info_data.get("riskFactor")
+    if isinstance(risk, dict):
+        head = risk.get("head")
+        if isinstance(head, dict):
+            for key in ("fullname_director", "full_name", "name", "fio", "head_name"):
+                found = normalize_person_name(head.get(key))
+                if found:
+                    return found
+
+    return None
+
+
 def map_info_data(
     iin: str,
     info_data: dict[str, Any],
@@ -406,7 +442,7 @@ def map_info_data(
         or company_name
         or None
     )
-    director = basic.get("fullname_director") or basic.get("director")
+    director = _resolve_director_name(info_data)
     address = basic.get("legal_address") or basic.get("legal_address_kz")
     registration_date = basic.get("date_registration") or basic.get("last_date_registration")
     employees = basic.get("employee_count")
@@ -444,7 +480,8 @@ def map_info_data(
             if f["name"] not in names:
                 founders_list.append(f)
 
-    in_sanctions = _has_critical_risk(risk_flags, status_flags) or bool(risk_flags)
+    # Only critical / sanction-related flags — not «Налоговый риск: средняя» etc.
+    in_sanctions = _has_critical_risk(risk_flags, status_flags)
     status_text = _status_label(status_block, basic)
 
     has_company = bool(name or director or address)
@@ -453,14 +490,14 @@ def map_info_data(
     has_contacts = any(contacts.values())
 
     section_sources = {
-        "companyInfo": "adata" if has_company else "stub",
-        "taxes": "adata" if has_tax else "stub",
-        "courts": "adata" if has_courts or lit_data else "stub",
-        "sanctions": "adata" if risk is not None else "stub",
-        "affiliates": "adata" if has_affiliates else "stub",
-        "graph": "adata" if has_affiliates else "stub",
-        "assessment": "stub",
-        "conclusion": "stub",
+        "companyInfo": "adata" if has_company else "none",
+        "taxes": "adata" if has_tax else "none",
+        "courts": "adata" if has_courts or lit_data else "none",
+        "sanctions": "adata" if risk is not None else "none",
+        "affiliates": "adata" if has_affiliates else "none",
+        "graph": "adata" if has_affiliates else "none",
+        "assessment": "none",
+        "conclusion": "none",
     }
 
     wrapper = raw if raw is not None else {"info": {"success": True, "data": info_data}}
@@ -487,7 +524,7 @@ def map_info_data(
         "court_cases_years": court_years,
         "court_totals": court_totals,
         "in_sanctions_list": in_sanctions,
-        "director": str(director) if director else None,
+        "director": director,
         "address": str(address) if address else None,
         "registration_date": str(registration_date) if registration_date else None,
         "employees": int(employees) if employees is not None else None,

@@ -15,7 +15,7 @@ ENRICHMENT_SECTIONS = (
     "conclusion",
 )
 
-SourceKind = str  # "adata" | "stub"
+SourceKind = str  # "adata" | "none"
 
 
 def _endpoint_ok(raw: dict[str, Any], key: str) -> bool:
@@ -29,15 +29,15 @@ def _endpoint_ok(raw: dict[str, Any], key: str) -> bool:
 
 def infer_section_sources_from_data(data: CompanyData, provider: str) -> dict[str, str]:
     """Infer per-section provider from CompanyData.raw and populated fields."""
-    if provider == "stub":
-        return {section: "stub" for section in ENRICHMENT_SECTIONS}
-
     raw = data.raw or {}
     explicit = raw.get("_section_sources")
     if isinstance(explicit, dict):
-        return {section: explicit.get(section, "stub") for section in ENRICHMENT_SECTIONS}
+        return {
+            section: "none" if explicit.get(section) in (None, "stub") else explicit.get(section, "none")
+            for section in ENRICHMENT_SECTIONS
+        }
 
-    sources: dict[str, str] = {section: "stub" for section in ENRICHMENT_SECTIONS}
+    sources: dict[str, str] = {section: "none" for section in ENRICHMENT_SECTIONS}
 
     if (
         _endpoint_ok(raw, "info")
@@ -58,8 +58,8 @@ def infer_section_sources_from_data(data: CompanyData, provider: str) -> dict[st
     courts_from_risk = data.court_cases is not None and _endpoint_ok(raw, "riskfactor")
     if courts_from_courtcase or courts_from_info or data.court_cases_years or courts_from_risk:
         sources["courts"] = "adata"
-    if raw.get("_courts_source") == "stub":
-        sources["courts"] = "stub"
+    if raw.get("_courts_source") in ("stub", "none"):
+        sources["courts"] = "none"
 
     sanctions_ok = _endpoint_ok(raw, "trustworthy_extended") or _endpoint_ok(raw, "sanctions")
     if sanctions_ok or _endpoint_ok(raw, "info") or data.in_sanctions_list is not None:
@@ -69,21 +69,21 @@ def infer_section_sources_from_data(data: CompanyData, provider: str) -> dict[st
         sources["affiliates"] = "adata"
         sources["graph"] = "adata"
 
-    sources["assessment"] = "stub"
-    sources["conclusion"] = "stub"
+    sources["assessment"] = "none"
+    sources["conclusion"] = "none"
     return sources
 
 
 def merge_section_sources(*maps: dict[str, str]) -> dict[str, str]:
-    merged: dict[str, str] = {section: "stub" for section in ENRICHMENT_SECTIONS}
+    merged: dict[str, str] = {section: "none" for section in ENRICHMENT_SECTIONS}
     for source_map in maps:
         for section, kind in source_map.items():
             if section not in merged:
                 continue
             if kind == "adata":
                 merged[section] = "adata"
-    merged["assessment"] = "stub"
-    merged["conclusion"] = "stub"
+    merged["assessment"] = "none"
+    merged["conclusion"] = "none"
     if merged.get("affiliates") == "adata":
         merged["graph"] = "adata"
     return merged
@@ -91,8 +91,8 @@ def merge_section_sources(*maps: dict[str, str]) -> dict[str, str]:
 
 def default_section_sources(case_sources: list[str] | None = None) -> dict[str, str]:
     """Fallback when only case-level provider list is stored."""
-    kind: SourceKind = "adata" if case_sources and "adata" in case_sources else "stub"
+    kind: SourceKind = "adata" if case_sources and "adata" in case_sources else "none"
     return {section: kind for section in ENRICHMENT_SECTIONS} | {
-        "assessment": "stub",
-        "conclusion": "stub",
+        "assessment": "none",
+        "conclusion": "none",
     }

@@ -61,6 +61,18 @@ class UploadCasesRequest(BaseModel):
     onDuplicate: DuplicatePolicy = "create"
 
 
+class ParseBinsRequest(BaseModel):
+    text: str = Field(min_length=1)
+
+    @field_validator("text")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Field must not be empty.")
+        return cleaned
+
+
 class CheckDuplicatesRequest(BaseModel):
     iinBins: list[str] = Field(min_length=1)
 

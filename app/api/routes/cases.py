@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-import re
-from pathlib import Path
+import logging
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 
 from app.core.config import settings
 from app.models import db
-from app.services.adata.client import AdataError, download_company_report
+from app.services.adata.client import AdataError, fetch_pdf_report_url
 from app.models.schemas import (
     ChatRequest,
     CheckDuplicatesRequest,
     DocumentRequest,
     DuplicatePolicy,
     LookupRequest,
+    ParseBinsRequest,
     UploadCasesRequest,
 )
 from app.models.serializers import case_to_api
@@ -26,8 +27,15 @@ from app.services.affiliate_tree import (
     get_cached_node_report,
     normalize_bin,
 )
-from app.services.import_parser import parse_import_file, preview_import_rows
-from app.services.pipeline import process_case, rescreen_case_lseg
+from app.services.import_parser import (
+    parse_bins_text,
+    parse_import_file,
+    preview_import_rows,
+)
+from app.services.ai.full_report import generate_full_report
+from app.services.pipeline import process_case, rescreen_case_lseg, rescreen_lseg_extended
+
+logger = logging.getLogger(__name__)
 from app.services.queue import (
     enqueue_affiliate_tree,
     enqueue_ai_conclusion,
@@ -109,6 +117,13 @@ def check_upload_duplicates(payload: CheckDuplicatesRequest) -> dict[str, Any]:
     return {"matches": matches, "count": len(matches)}
 
 
+@router.post("/upload/parse-bins")
+def parse_bins_upload(payload: ParseBinsRequest) -> dict[str, Any]:
+    items = parse_bins_text(payload.text)
+    rows = preview_import_rows(items)
+    return {"rows": rows, "count": len(rows)}
+
+
 @router.post("/upload/parse")
 async def parse_upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     filename = file.filename or ""
@@ -117,10 +132,10 @@ async def parse_upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="File is empty")
 
     lower = filename.lower()
-    if not lower.endswith((".xlsx", ".xls", ".docx")):
+    if not lower.endswith((".xlsx", ".xls", ".docx", ".txt", ".csv")):
         raise HTTPException(
             status_code=400,
-            detail="Unsupported file type. Use .xlsx, .xls, or .docx",
+            detail="Unsupported file type. Use .xlsx, .xls, .docx, .txt, or .csv",
         )
 
     try:
@@ -339,27 +354,31 @@ def ai_status() -> dict[str, Any]:
 
 
 @router.get("/cases/{case_id}/report")
-async def download_case_report(case_id: str) -> FileResponse:
+async def download_case_report(case_id: str) -> Response:
     row = db.get_case(case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Case not found")
     if not settings.adata_token:
         raise HTTPException(status_code=503, detail="ADATA_TOKEN is not configured")
 
-    safe_name = re.sub(r"[^\w\-]+", "_", row["company_name"])[:60].strip("_") or "company"
-    out_dir = settings.pdf_dir / "cases" / case_id
-    out_path = out_dir / f"adata-{row['iin']}-{safe_name}.pdf"
-
+    iin = row["iin"]
     try:
-        await download_company_report(row["iin"], out_path)
+        pdf_url = await fetch_pdf_report_url(iin)
     except AdataError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    filename = f"adata-report-{row['iin']}.pdf"
-    return FileResponse(
-        path=Path(out_path),
+    timeout = max(settings.adata_timeout_seconds, 35.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            pdf_response = await client.get(pdf_url, follow_redirects=True)
+            pdf_response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"PDF download failed: {exc}") from exc
+
+    filename = f"adata-report-{iin}.pdf"
+    return Response(
+        content=pdf_response.content,
         media_type="application/pdf",
-        filename=filename,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -419,11 +438,11 @@ def post_document(case_id: str, payload: DocumentRequest) -> dict[str, Any]:
 
 
 @router.post("/admin/rescreen")
-async def rescreen_all_with_lseg() -> dict[str, Any]:
-    """Backfill LSEG screening + re-score for all existing ready cases.
+async def rescreen_all_with_lseg(force: bool = False) -> dict[str, Any]:
+    """Backfill or refresh LSEG screening + re-score for ready cases.
 
-    Idempotent: skips cases that already have enriched_data.lseg.screenedAt.
-    Rate-limited: 0.5 s between requests to respect WC1 API limits.
+    With ``force=false`` (default), skips cases that already have ``lseg.screenedAt``.
+    With ``force=true``, re-runs WC1 and invalidates Redis cache per case.
     """
     import asyncio as _asyncio
 
@@ -439,22 +458,99 @@ async def rescreen_all_with_lseg() -> dict[str, Any]:
             cid = row["id"]
             enriched = row.get("enriched_data") or {}
             lseg_existing = enriched.get("lseg")
-            if lseg_existing and lseg_existing.get("screenedAt"):
+            if not force and lseg_existing and lseg_existing.get("screenedAt"):
                 skipped += 1
                 continue
-            success = await rescreen_case_lseg(cid)
+            success = await rescreen_case_lseg(cid, force=force)
             if success:
                 ok += 1
             else:
                 err += 1
             await _asyncio.sleep(0.5)
+        logger.info(
+            "LSEG bulk rescreen finished: ok=%s err=%s skipped=%s force=%s",
+            ok,
+            err,
+            skipped,
+            force,
+        )
 
     _asyncio.create_task(_run())
 
+    verb = "перепроверка" if force else "дозаполнение"
     return {
         "queued": len(ready),
-        "message": f"Запущен фоновый LSEG re-screen для {len(ready)} кейсов",
+        "force": force,
+        "message": f"Запущен фоновый LSEG {verb} для {len(ready)} кейсов",
     }
+
+
+@router.post("/cases/{case_id}/rescreen-extended")
+async def rescreen_extended(case_id: str) -> dict[str, Any]:
+    """Re-run LSEG screening for all non-resident nodes in the affiliate tree."""
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if row.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="Кейс должен быть в статусе ready")
+    result = await rescreen_lseg_extended(case_id)
+    return {"status": "ok", "screened": result}
+
+
+@router.post("/cases/{case_id}/lseg/rescreen")
+async def rescreen_case_lseg_endpoint(case_id: str, force: bool = True) -> dict[str, Any]:
+    """Re-run LSEG WC1 for one case and update risk score."""
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if row.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="Кейс должен быть в статусе ready")
+
+    success = await rescreen_case_lseg(case_id, force=force)
+    if not success:
+        raise HTTPException(status_code=502, detail="LSEG screening failed")
+
+    updated = db.get_case(case_id)
+    enriched = (updated or {}).get("enriched_data") or {}
+    return {
+        "caseId": case_id,
+        "riskLevel": updated.get("risk_level") if updated else None,
+        "totalScore": enriched.get("totalScore"),
+        "lseg": enriched.get("lseg"),
+    }
+
+
+@router.post("/cases/{case_id}/full-report")
+async def generate_case_full_report(case_id: str) -> dict[str, Any]:
+    """Запустить генерацию полного AI-отчёта в фоне."""
+    import asyncio as _asyncio
+
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if row.get("status") != "ready":
+        raise HTTPException(
+            status_code=400, detail="Кейс должен быть в статусе ready"
+        )
+    _asyncio.create_task(generate_full_report(case_id))
+    return {
+        "status": "queued",
+        "message": "Генерация полного отчёта запущена в фоне",
+        "caseId": case_id,
+    }
+
+
+@router.get("/cases/{case_id}/full-report")
+def get_case_full_report(case_id: str) -> dict[str, Any]:
+    """Получить готовый полный отчёт."""
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    enriched = row.get("enriched_data") or {}
+    report = enriched.get("fullReport")
+    if not report:
+        raise HTTPException(status_code=404, detail="Отчёт ещё не сгенерирован")
+    return {"report": report, "generatedAt": enriched.get("fullReportGeneratedAt")}
 
 
 @router.get("/cases/{case_id}/score")

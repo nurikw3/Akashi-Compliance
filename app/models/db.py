@@ -10,6 +10,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.core.config import settings
+from app.core.auth import hash_password
 
 
 def ensure_storage() -> None:
@@ -84,7 +85,59 @@ def init_db() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         connection.commit()
+    _ensure_admin_user()
+
+
+def _ensure_admin_user() -> None:
+    """Create or refresh the single admin user from env (password hash only in DB)."""
+    username = settings.admin_username.strip()
+    password = settings.admin_password
+    if not username or not password:
+        return
+
+    password_hash = hash_password(password)
+    created_at = _now_iso()
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT id FROM users WHERE username = %s",
+            (username,),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                """
+                INSERT INTO users (username, password_hash, created_at)
+                VALUES (%s, %s, %s)
+                """,
+                (username, password_hash, created_at),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE users SET password_hash = %s WHERE username = %s
+                """,
+                (password_hash, username),
+            )
+        connection.commit()
+
+
+def get_user_by_username(username: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT id, username, password_hash, created_at FROM users WHERE username = %s",
+            (username,),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def _now_iso() -> str:
@@ -122,6 +175,29 @@ def list_cases() -> list[dict[str, Any]]:
             FROM cases
             ORDER BY created_at DESC
             """
+        ).fetchall()
+    return [_deserialize_case(row) for row in rows]
+
+
+def search_cases_by_name(name: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Search cases by company name using ILIKE."""
+    pattern = f"%{name}%"
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, company_name, iin, status, risk_level, enriched_data,
+                   sources, conclusion, created_at, parent_case_id
+            FROM cases
+            WHERE company_name ILIKE %s
+               OR (
+                   enriched_data IS NOT NULL
+                   AND enriched_data <> ''
+                   AND enriched_data::jsonb->>'company_name' ILIKE %s
+               )
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (pattern, pattern, limit),
         ).fetchall()
     return [_deserialize_case(row) for row in rows]
 

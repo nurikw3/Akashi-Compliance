@@ -10,7 +10,7 @@ from app.services.adata.client import deep_find, info_has, run_parallel_checks
 from app.services.adata.info_mapper import info_has_structured_blocks, map_info_data
 from app.services.adata.client import _SANCTION_KEYS
 from app.services.enrichment.base import BaseProvider, CompanyData
-from app.services.enrichment.providers.stub import StubProvider
+from app.services.enrichment.person import normalize_person_name
 # Re-export for legacy audit routes that import from this module.
 from app.services.adata.client import (  # noqa: F401
     AdataError,
@@ -223,9 +223,9 @@ class AdataProvider(BaseProvider):
                 )
             ):
                 return "adata"
-            return "stub"
+            return "none"
 
-        courts = "stub" if courts_stub else _from("courtcase", has_courts)
+        courts = "none" if courts_stub else _from("courtcase", has_courts)
         return {
             "companyInfo": _from("basic", has_company),
             "taxes": _from("riskfactor", has_tax),
@@ -233,8 +233,8 @@ class AdataProvider(BaseProvider):
             "sanctions": _from("sanctions", has_sanctions),
             "affiliates": _from("relation", has_affiliates),
             "graph": _from("relation", has_affiliates),
-            "assessment": "stub",
-            "conclusion": "stub",
+            "assessment": "none",
+            "conclusion": "none",
         }
 
     def _map_raw(self, iin: str, raw: dict[str, Any], company_name: str) -> CompanyData:
@@ -285,7 +285,21 @@ class AdataProvider(BaseProvider):
                 "fullnameru",
             }
         )
-        director = _pick({"director", "head", "ceo", "manager", "head_name", "directorname"})
+        director = None
+        if basic_data:
+            director = normalize_person_name(
+                basic_data.get("fullname_director") or basic_data.get("director")
+            )
+        if not director and info_data:
+            basic_block = info_data.get("basic")
+            if isinstance(basic_block, dict):
+                director = normalize_person_name(
+                    basic_block.get("fullname_director") or basic_block.get("director")
+                )
+        if not director:
+            director = normalize_person_name(
+                _pick({"head_name", "directorname", "ceo", "manager", "head"})
+            )
         status = _pick(
             {
                 "status",
@@ -319,7 +333,7 @@ class AdataProvider(BaseProvider):
         court_active, court_years, court_totals, court_ui_cases, courts_from_info = (
             self._court_from_info(info_data)
         )
-        courts_source = "adata" if courts_from_info else "stub"
+        courts_source = "adata" if courts_from_info else "none"
 
         courtcase_payload = raw.get("courtcase", {})
         if not courts_from_info and isinstance(courtcase_payload, dict):
@@ -329,12 +343,12 @@ class AdataProvider(BaseProvider):
                 )
                 courts_source = "adata"
             elif courtcase_payload.get("error"):
-                courts_source = "stub"
+                courts_source = "none"
 
         if court_active is None and risk_court_cases is not None:
             try:
                 court_active = int(risk_court_cases)
-                if courts_source == "stub":
+                if courts_source == "none":
                     courts_source = "adata"
             except (TypeError, ValueError):
                 pass
@@ -393,7 +407,7 @@ class AdataProvider(BaseProvider):
             has_company=has_company,
             has_tax=has_tax,
             has_courts=has_courts,
-            courts_stub=courts_source == "stub",
+            courts_stub=courts_source == "none",
             has_sanctions=has_sanctions,
             has_affiliates=has_affiliates,
         )
@@ -408,7 +422,7 @@ class AdataProvider(BaseProvider):
             court_cases_years=court_years,
             court_totals=court_totals,
             in_sanctions_list=in_sanctions,
-            director=str(director) if director else None,
+            director=director,
             address=str(address) if address else None,
             registration_date=str(registration_date) if registration_date else None,
             employees=employees,
@@ -443,6 +457,6 @@ class AdataProvider(BaseProvider):
             return self._map_raw(iin, raw, "")
         except Exception as exc:
             logger.info("Adata enrichment failed for BIN %s: %s", iin, exc)
-            if settings.use_stub_on_api_failure:
+            if settings.suppress_enrichment_errors:
                 return None
             raise

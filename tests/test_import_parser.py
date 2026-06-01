@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from app.services.import_parser import parse_docx_bytes, preview_import_rows
+from app.services.import_parser import (
+    parse_bins_bytes,
+    parse_bins_text,
+    parse_docx_bytes,
+    preview_import_rows,
+)
 
 SAMPLE_DOCX = Path("/Users/nurasyk/Downloads/контрагенты_wi!th bin.docx")
 TEST_2_BIN_DOCX = Path("/Users/nurasyk/Downloads/TEST_2_BIN.docx")
@@ -23,6 +28,23 @@ def test_sample_docx_parses_kazakh_companies() -> None:
     assert len(valid) >= 10
     assert any("AIX FM LIMITED" in row["name"] for row in valid)
     assert all(len(row["iinBin"]) == 12 for row in valid)
+
+
+def test_parse_bins_text_deduplicates() -> None:
+    text = "191040900016\n171040021791\n191040900016, 999"
+    items = parse_bins_text(text)
+    rows = preview_import_rows(items)
+
+    assert len(items) == 2
+    assert all(row["valid"] for row in rows)
+    assert {row["iinBin"] for row in rows} == {"191040900016", "171040021791"}
+    assert rows[0]["name"] == "БИН 191040900016"
+
+
+def test_parse_bins_bytes_utf8() -> None:
+    content = b"191040900016\r\n171040021791"
+    items = parse_bins_bytes(content)
+    assert len(items) == 2
 
 
 def test_paragraph_line_extracts_name_and_bin() -> None:

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
+import { AuthGate } from '@/components/auth-gate'
 import { CasesProvider } from '@/lib/cases-context'
 import { Header } from '@/components/header'
 import './globals.css'
@@ -20,12 +21,14 @@ export default function RootLayout({
   return (
     <html lang="ru" className="bg-neutral-50">
       <body className={`${inter.className} antialiased`}>
-        <CasesProvider>
-          <Header />
-          <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
-            {children}
-          </main>
-        </CasesProvider>
+        <AuthGate>
+          <CasesProvider>
+            <Header />
+            <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+              {children}
+            </main>
+          </CasesProvider>
+        </AuthGate>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>

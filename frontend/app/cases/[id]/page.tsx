@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { Suspense } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { CaseDetail } from '@/components/case-detail'
 
@@ -14,7 +15,9 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
         <ArrowLeft className="w-4 h-4" />
         Назад к списку
       </Link>
-      <CaseDetail caseId={id} />
+      <Suspense fallback={<div className="py-16 text-center text-neutral-500">Загрузка…</div>}>
+        <CaseDetail caseId={id} />
+      </Suspense>
     </div>
   )
 }
