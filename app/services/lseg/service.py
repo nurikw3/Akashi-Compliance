@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.services.cache import LSEG_TTL, delete_cached, get_cached, lseg_key, set_cached
 from app.services.lseg.client import LsegClient
 from app.services.lseg.mapper import _extract_hits, _extract_media, build_lseg_section
+from app.services.verification_log import append_case_event
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,9 @@ async def _screen_entity(name: str, entity_type: str) -> dict[str, Any] | None:
     }
 
 
-async def _fetch_with_cache(name: str, entity_type: str) -> dict[str, Any] | None:
+async def _fetch_with_cache_meta(
+    name: str, entity_type: str
+) -> tuple[dict[str, Any] | None, bool]:
     """Return entity screening data from Redis cache or WC1 API.
 
     On API success the result is stored in cache for future calls.
@@ -85,12 +88,12 @@ async def _fetch_with_cache(name: str, entity_type: str) -> dict[str, Any] | Non
     cache_key = lseg_key(name, entity_type)
     cached = await get_cached(cache_key)
     if cached is not None:
-        return cached
+        return cached, True
 
     data = await _screen_entity(name, entity_type)
     if data is not None:
         await set_cached(cache_key, data, LSEG_TTL)
-    return data
+    return data, False
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +106,7 @@ async def screen(
     company_name: str,
     director: str | None = None,
     iin: str = "",
+    case_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Screen company + director via WC1. Returns lseg section dict or None on failure."""
     if not is_available():
@@ -111,16 +115,30 @@ async def screen(
     now = datetime.now(timezone.utc).isoformat()
     has_director = bool(director and director.strip() and director != "—")
 
-    company_data, director_data = await asyncio.gather(
-        _fetch_with_cache(company_name, "ORGANISATION"),
-        _fetch_with_cache(director, "INDIVIDUAL") if has_director else _noop(),  # type: ignore[arg-type]
+    company_pair, director_pair = await asyncio.gather(
+        _fetch_with_cache_meta(company_name, "ORGANISATION"),
+        _fetch_with_cache_meta(director, "INDIVIDUAL") if has_director else _noop(),  # type: ignore[arg-type]
+    )
+
+    company_data, company_cached = company_pair if isinstance(company_pair, tuple) else (None, False)
+    director_data, director_cached = (
+        director_pair if isinstance(director_pair, tuple) else (None, False)
     )
 
     if not isinstance(company_data, dict):
         logger.error("LSEG company screening failed for %s", company_name)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="LSEG",
+                action="screen",
+                subject={"type": "BIN", "value": iin, "name": company_name},
+                request={"endpoint": "WC1 screen_sync + results/media/rating"},
+                outcome={"status": "error", "cached": False, "message": "company_screen_failed"},
+            )
         return None
 
-    return build_lseg_section(
+    section = build_lseg_section(
         company_case_id=company_data["case_id"],
         company_hits=company_data["hits"],
         director_hits=director_data["hits"] if isinstance(director_data, dict) else [],
@@ -130,10 +148,34 @@ async def screen(
         screened_name=company_name,
         screened_iin=iin,
     )
+    if case_id:
+        append_case_event(
+            case_id,
+            provider="LSEG",
+            action="screen",
+            subject={"type": "BIN", "value": iin, "name": company_name},
+            request={"endpoint": "WC1 screen_sync + results/media/rating"},
+            outcome={
+                "status": "ok",
+                "cached": bool(company_cached and (director_cached if has_director else True)),
+                "counts": {
+                    "companyHits": len(company_data.get("hits") or []),
+                    "directorHits": len((director_data or {}).get("hits") or []) if isinstance(director_data, dict) else 0,
+                    "mediaArticles": len(company_data.get("media_articles") or []),
+                },
+                "meta": {
+                    "companyCached": company_cached,
+                    "directorCached": director_cached if has_director else None,
+                },
+            },
+        )
+    return section
 
 
 async def screen_batch(
     entities: list[dict],
+    *,
+    case_id: str | None = None,
 ) -> dict[str, dict | None]:
     """Screen multiple entities in parallel with Redis caching and rate limiting.
 
@@ -154,10 +196,12 @@ async def screen_batch(
     results: dict[str, dict | None] = {}
     uncached: list[dict] = []
 
+    cache_hits = 0
     for entity in entities:
         cached = await get_cached(lseg_key(entity["name"], entity["entity_type"]))
         if cached is not None:
             results[entity["key"]] = cached
+            cache_hits += 1
         else:
             uncached.append(entity)
 
@@ -182,6 +226,22 @@ async def screen_batch(
         *[_fetch(e) for e in uncached]
     )
     results.update(fetched)
+    if case_id:
+        append_case_event(
+            case_id,
+            provider="LSEG",
+            action="screen_batch",
+            request={"endpoint": "WC1 batch (parallel per-entity)"},
+            outcome={
+                "status": "ok",
+                "cached": cache_hits == len(entities),
+                "counts": {
+                    "targets": len(entities),
+                    "cachedHits": cache_hits,
+                    "freshCalls": len(uncached),
+                },
+            },
+        )
     return results
 
 

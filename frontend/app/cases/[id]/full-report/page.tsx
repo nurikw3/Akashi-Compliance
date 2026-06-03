@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { ArrowLeft, FileText, Loader2, RefreshCw } from 'lucide-react'
+import { ArrowLeft, FileText, Loader2, Printer, RefreshCw } from 'lucide-react'
 import { useCases } from '@/lib/cases-context'
 import { fetchFullReport, generateFullReport } from '@/lib/api'
 import { LoadingGif } from '@/components/loading-gif'
-import { MarkdownContent } from '@/components/markdown-content'
+import { ReportViewer } from '@/components/report-viewer'
 
 export default function FullReportPage() {
   const params = useParams()
@@ -52,14 +52,18 @@ export default function FullReportPage() {
 
   const handleGenerate = async () => {
     if (!caseId) return
+    const previousGeneratedAt = generatedAt
     setGenerating(true)
     setError(null)
     try {
-      await generateFullReport(caseId)
+      await generateFullReport(caseId, true)
       for (let i = 0; i < 12; i++) {
         await new Promise((r) => setTimeout(r, 2500))
         try {
           const data = await fetchFullReport(caseId)
+          if (previousGeneratedAt && data.generatedAt === previousGeneratedAt) {
+            continue
+          }
           setReport(data.report)
           setGeneratedAt(data.generatedAt)
           setGenerating(false)
@@ -101,6 +105,16 @@ export default function FullReportPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {report && (
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="flex items-center gap-2 px-3 py-2.5 border border-neutral-200 rounded-lg text-sm font-medium text-neutral-600 hover:bg-neutral-50 print:hidden"
+            >
+              <Printer className="w-4 h-4" />
+              Печать
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -153,9 +167,9 @@ export default function FullReportPage() {
           </button>
         </div>
       ) : (
-        <article className="bg-white rounded-xl border border-neutral-200 p-8 print:border-0 print:shadow-none prose prose-neutral max-w-none">
-          <MarkdownContent>{report}</MarkdownContent>
-        </article>
+        <div className="print:py-2">
+          <ReportViewer markdown={report} />
+        </div>
       )}
     </div>
   )

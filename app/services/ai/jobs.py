@@ -7,6 +7,7 @@ from typing import Any
 
 from app.models import db
 from app.services.ai.service import AIService
+from app.services.verification_log import append_case_event
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,19 @@ async def generate_conclusion_for_case(case_id: str) -> None:
         return
 
     try:
+        append_case_event(
+            case_id,
+            provider="AI",
+            action="conclusion:start",
+            outcome={
+                "status": "ok",
+                "meta": {
+                    "hasEnrichment": bool(enrichment),
+                    "hasAssessment": bool(assessment),
+                    "hasLseg": bool(enriched.get("lseg")),
+                },
+            },
+        )
         conclusion = await AIService().generate_conclusion(
             company_name=row["company_name"],
             enrichment=enrichment,
@@ -35,8 +49,10 @@ async def generate_conclusion_for_case(case_id: str) -> None:
         )
         db.update_case(case_id, conclusion=conclusion)
         logger.info("AI conclusion saved for %s", case_id)
+        append_case_event(case_id, provider="AI", action="conclusion:saved", outcome={"status": "ok"})
     except Exception:
         logger.exception("AI conclusion failed for %s", case_id)
+        append_case_event(case_id, provider="AI", action="conclusion", outcome={"status": "error"})
 
 
 async def chat_reply_for_case(case_id: str, user_message: str) -> dict[str, Any]:

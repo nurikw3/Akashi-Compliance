@@ -8,34 +8,97 @@ beneficiary + non-residents + relation + affiliate tree) и генерирует
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import settings
 from app.models import db
 from app.services.affiliate_tree import normalize_bin
+from app.services.verification_log import append_case_event
 
 logger = logging.getLogger(__name__)
 
 MISSING = "Данные отсутствуют"
 
-SYSTEM_PROMPT = """Ты — профессиональный комплаенс-аналитик. На основе ТОЛЬКО предоставленных данных составь структурированный отчёт.
+SYSTEM_PROMPT_SANCTIONS = """Ты — комплаенс-аналитик. Составь раздел «Санкционный анализ» по ТОЛЬКО предоставленным данным LSEG.
 
 ПРАВИЛА:
 1. Используй ИСКЛЮЧИТЕЛЬНО данные из контекста. Не выдумывай факты.
 2. Если данных нет — пиши «Данные отсутствуют».
-3. Структура отчёта:
-   1. Резюме (3-5 предложений)
-   2. Санкционные риски (LSEG — компания, директор, аффилиаты)
-   3. Судебные риски (компания и ключевые аффилиаты)
-   4. Налоговые риски
-   5. Структура владения и аффилиаты
-   6. Итоговый риск-уровень и рекомендации
-   7. Источники данных
-4. Для каждого раздела: если данные чистые — одна фраза. Если есть риски — детально.
-5. Отвечай на русском языке.
-6. НЕ используй HTML-теги (<br>, <b>, <p> и т.д.) — только Markdown.
-"""
+3. Охвати: санкции по компании, PEP директора, расширенный скрининг аффилиатов/нерезидентов.
+4. Если чисто — кратко одной фразой. Если есть совпадения — детально с указанием списков и силы совпадения.
+5. Отвечай на русском. Только Markdown, без HTML-тегов.
+6. Не пиши заголовок раздела — только содержание.
+7. Формат:
+   - короткие абзацы до 260 символов;
+   - списки с маркерами "- ", не более 6 пунктов в подразделе;
+   - никаких длинных «простыней» текста.
+8. ОБЯЗАТЕЛЬНО в конце добавь блок:
+### Краткое сведение
+- Ключевой вывод: ...
+- Риск: green flag | yellow flag | red flag
+- Следующее действие: ..."""
+
+SYSTEM_PROMPT_COURTS = """Ты — комплаенс-аналитик. Составь раздел «Судебные дела и риски» по ТОЛЬКО предоставленным данным.
+
+ПРАВИЛА:
+1. Используй ИСКЛЮЧИТЕЛЬНО данные из контекста. Не выдумывай факты.
+2. Охвати судебные дела компании и персональные дела директора/аффилиатов.
+3. Для документов используй Markdown-ссылки [имя файла](url) из контекста.
+4. Укажи налоговые риски, если они есть в контексте.
+5. Если дел нет — одна фраза. Если есть — перечисли ключевые с оценкой риска.
+6. Отвечай на русском. Только Markdown, без HTML-тегов.
+7. Не пиши заголовок раздела — только содержание.
+8. Формат:
+   - короткие абзацы до 260 символов;
+   - списки с маркерами "- ", не более 7 пунктов в подразделе;
+   - ссылки на документы оставляй в Markdown-виде.
+9. ОБЯЗАТЕЛЬНО в конце добавь блок:
+### Краткое сведение
+- Ключевой вывод: ...
+- Риск: green flag | yellow flag | red flag
+- Следующее действие: ..."""
+
+SYSTEM_PROMPT_STRUCTURE = """Ты — комплаенс-аналитик. Составь раздел «Структура и аффилиаты» по ТОЛЬКО предоставленным данным.
+
+ПРАВИЛА:
+1. Используй ИСКЛЮЧИТЕЛЬНО данные из контекста. Не выдумывай факты.
+2. Охвати: дерево аффилиатов, профили L1, бенефициаров, связи через директора/учредителей.
+3. Если структура прозрачна — кратко. Если есть риски — детально.
+4. Отвечай на русском. Только Markdown, без HTML-тегов.
+5. Не пиши заголовок раздела — только содержание.
+6. Формат:
+   - короткие абзацы до 260 символов;
+   - списки с маркерами "- ", не более 7 пунктов в подразделе.
+7. ОБЯЗАТЕЛЬНО в конце добавь блок:
+### Краткое сведение
+- Ключевой вывод: ...
+- Риск: green flag | yellow flag | red flag
+- Следующее действие: ..."""
+
+SYSTEM_PROMPT_SUMMARY = """Ты — комплаенс-аналитик. Составь Executive Summary (резюме) на 5-7 предложений.
+
+ПРАВИЛА:
+1. Используй выжимки из секций и итоговый балл/уровень риска из контекста.
+2. Укажи ключевые риски и рекомендацию (одобрить / доп. проверка / отказать).
+3. Не выдумывай факты — только то, что есть в контексте.
+4. Отвечай на русском. Только Markdown, без HTML-тегов.
+5. Не пиши заголовок — только текст резюме."""
+
+_SECTION_PROMPTS: dict[str, str] = {
+    "sanctions": SYSTEM_PROMPT_SANCTIONS,
+    "courts": SYSTEM_PROMPT_COURTS,
+    "structure": SYSTEM_PROMPT_STRUCTURE,
+    "summary": SYSTEM_PROMPT_SUMMARY,
+}
+
+_SECTION_MAX_CHARS: dict[str, int] = {
+    "sanctions": 8000,
+    "courts": 10000,
+    "structure": 8000,
+    "summary": 6000,
+}
 
 
 def _truncate_context(text: str, max_chars: int = 20000) -> str:
@@ -73,6 +136,7 @@ def _list_data_sources(enriched: dict[str, Any]) -> list[str]:
         ("relationExtended", "Adata Relation Extended"),
         ("directorProfile", "Adata профиль директора (ИИН)"),
         ("affiliateProfiles", "Adata данные аффилиатов L1"),
+        ("individualCourts", "Adata персональные судебные дела (ИИН)"),
         ("scoreBreakdown", "Скоринг (7 метрик)"),
         ("assessment", "Оценка риска (assessment)"),
     ]
@@ -313,7 +377,9 @@ def _format_affiliate_tree_compact(tree: dict, *, max_nodes: int = 15) -> str:
         name = node.get("name") or "—"
         iin_bin = node.get("iinBin") or "—"
         role = node.get("role") or ""
-        lines.append(f"  L{level}: {name} | БИН {iin_bin} | {role}")
+        indent = "  " * level
+        role_part = f" | {role}" if role else ""
+        lines.append(f"{indent}- **L{level}** {name} | БИН `{iin_bin}`{role_part}")
         total += 1
         for child in node.get("children") or []:
             if isinstance(child, dict) and total < max_nodes:
@@ -324,7 +390,7 @@ def _format_affiliate_tree_compact(tree: dict, *, max_nodes: int = 15) -> str:
         _walk(root, 0)
     nodes_count = tree.get("nodesCount", total)
     if nodes_count > total:
-        lines.append(f"  … ещё {nodes_count - total} узлов не показано")
+        lines.append(f"- *… ещё {nodes_count - total} узлов не показано*")
     return "\n".join(lines) if lines else MISSING
 
 
@@ -342,6 +408,713 @@ def _format_court_case_line(case: dict) -> str:
     return f"- {case.get('type', '')}: {summary}"
 
 
+def _format_individual_court_case(case: dict) -> list[str]:
+    """Format one individual court case with history and document links."""
+    lines = [
+        f"- Дело №{case.get('number') or '—'}: {case.get('type') or '—'}, "
+        f"суд: {case.get('court') or '—'}, дата: {case.get('date') or '—'}, "
+        f"результат: {case.get('result') or '—'}"
+    ]
+    category = case.get("category")
+    if _is_populated(category):
+        lines.append(f"  Категория: {category}")
+    judge = case.get("judge")
+    if _is_populated(judge):
+        lines.append(f"  Судья: {judge}")
+    defendants = case.get("defendants") or []
+    plaintiffs = case.get("plaintiffs") or []
+    if defendants:
+        lines.append(f"  Ответчики: {', '.join(str(d) for d in defendants[:5])}")
+    if plaintiffs:
+        lines.append(f"  Истцы: {', '.join(str(p) for p in plaintiffs[:5])}")
+    for doc in (case.get("documents") or []):
+        file_name = doc.get("file_name") or "документ"
+        doc_link = doc.get("doc_link") or ""
+        if doc_link:
+            lines.append(f"  - [{file_name}]({doc_link})")
+        else:
+            lines.append(f"  - {file_name}")
+    for event in (case.get("history") or [])[:5]:
+        event_date = event.get("event_date") or "—"
+        event_name = event.get("name") or "—"
+        lines.append(f"  • {event_date}: {event_name}")
+        for doc in (event.get("documents") or []):
+            file_name = doc.get("file_name") or "документ"
+            doc_link = doc.get("doc_link") or ""
+            if doc_link:
+                lines.append(f"    - [{file_name}]({doc_link})")
+            else:
+                lines.append(f"    - {file_name}")
+    return lines
+
+
+def _format_individual_courts_for_llm(
+    individual_courts: dict[str, Any] | None,
+    meta: dict[str, Any] | None,
+) -> str:
+    """Format individualCourts dict for LLM context with markdown doc links."""
+    if not individual_courts or not isinstance(individual_courts, dict):
+        return MISSING
+
+    lines: list[str] = []
+    meta = meta if isinstance(meta, dict) else {}
+    for iin, cases in individual_courts.items():
+        if not cases or not isinstance(cases, list):
+            continue
+        person_meta = meta.get(iin) if isinstance(meta.get(iin), dict) else {}
+        name = person_meta.get("name") or iin
+        role = person_meta.get("role") or ""
+        company_name = person_meta.get("companyName") or ""
+        header = f"### {name} (ИИН {iin})"
+        if role:
+            header += f", {role}"
+        if company_name:
+            header += f" — {company_name}"
+        lines.append(header)
+        lines.append(f"Дел: {len(cases)}")
+        for case in cases[:8]:
+            if isinstance(case, dict):
+                lines.extend(_format_individual_court_case(case))
+        if len(cases) > 8:
+            lines.append(f"  … ещё {len(cases) - 8} дел не показано")
+
+    return "\n".join(lines) if lines else MISSING
+
+
+def _short_text(value: Any, *, max_len: int = 80) -> str:
+    text = str(value or "—").strip()
+    if not text:
+        return "—"
+    text = re.sub(r"\s+", " ", text)
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def _normalize_case_role(raw_role: Any) -> str:
+    role = str(raw_role or "").strip().lower()
+    if not role:
+        return "Не указано"
+    if "ответ" in role or "defend" in role:
+        return "Ответчик"
+    if "ист" in role or "plaint" in role:
+        return "Истец"
+    if "треть" in role or "third" in role:
+        return "Третья сторона"
+    return _short_text(raw_role, max_len=28)
+
+
+def _normalize_person_name_key(raw_name: Any) -> str:
+    return re.sub(r"\s+", " ", str(raw_name or "").strip().lower())
+
+
+def _extract_case_role_by_parties(case: dict[str, Any], person_name: str) -> str:
+    name_key = _normalize_person_name_key(person_name)
+    defendants = case.get("defendants") or []
+    plaintiffs = case.get("plaintiffs") or []
+    defendant_keys = {_normalize_person_name_key(x) for x in defendants if x}
+    plaintiff_keys = {_normalize_person_name_key(x) for x in plaintiffs if x}
+    if name_key and name_key in defendant_keys:
+        return "Ответчик"
+    if name_key and name_key in plaintiff_keys:
+        return "Истец"
+    return _normalize_case_role(case.get("role"))
+
+
+def _count_case_source_links(case: dict[str, Any]) -> int:
+    count = sum(1 for d in (case.get("documents") or []) if d.get("doc_link"))
+    for event in case.get("history") or []:
+        count += sum(1 for d in (event.get("documents") or []) if d.get("doc_link"))
+    return count
+
+
+def _is_serious_court_category(text: str) -> bool:
+    lowered = text.lower()
+    serious_markers = (
+        "семейно-бытов",
+        "бытов",
+        "насили",
+        "побо",
+        "уголов",
+        "террор",
+        "экстрем",
+        "статья 73",
+        "хулиган",
+        "противоправные действия",
+    )
+    return any(marker in lowered for marker in serious_markers)
+
+
+def _is_unresolved_case(case: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(case.get(k) or "")
+        for k in ("result", "status")
+    ).lower()
+    unresolved_markers = ("не заверш", "в производстве", "рассматрива", "pending")
+    return any(marker in text for marker in unresolved_markers)
+
+
+def _collect_court_rows(row: dict[str, Any]) -> list[dict[str, Any]]:
+    enriched = row.get("enriched_data") or {}
+    enrichment = enriched.get("enrichment") or {}
+    company_name = row.get("company_name") or "Компания"
+    rows: list[dict[str, Any]] = []
+
+    company_courts = enrichment.get("courts") or {}
+    for case in (company_courts.get("cases") or []):
+        if not isinstance(case, dict):
+            continue
+        category = case.get("category") or case.get("type") or "—"
+        row_item = {
+            "person_entity": _short_text(company_name, max_len=46),
+            "role_in_case": _normalize_case_role(case.get("role")),
+            "category": _short_text(category, max_len=70),
+            "result": _short_text(case.get("result") or case.get("status"), max_len=48),
+            "date": _short_text(case.get("date"), max_len=24),
+            "source_links": _count_case_source_links(case),
+            "is_top_officer": False,
+            "is_defendant": _normalize_case_role(case.get("role")) == "Ответчик",
+            "is_serious": _is_serious_court_category(str(category)),
+            "is_unresolved": _is_unresolved_case(case),
+        }
+        rows.append(row_item)
+
+    meta = enriched.get("individualCourtsMeta")
+    individual_meta = meta if isinstance(meta, dict) else {}
+    individual_courts = enriched.get("individualCourts")
+    if isinstance(individual_courts, dict):
+        for iin, cases in individual_courts.items():
+            if not isinstance(cases, list):
+                continue
+            person_meta = individual_meta.get(iin) if isinstance(individual_meta.get(iin), dict) else {}
+            person_name = str(person_meta.get("name") or iin)
+            person_role = str(person_meta.get("role") or "")
+            is_top_officer = any(
+                marker in person_role.lower() for marker in ("директор", "руковод")
+            )
+            for case in cases:
+                if not isinstance(case, dict):
+                    continue
+                case_role = _extract_case_role_by_parties(case, person_name)
+                category = case.get("category") or case.get("type") or "—"
+                row_item = {
+                    "person_entity": _short_text(person_name, max_len=46),
+                    "role_in_case": case_role,
+                    "category": _short_text(category, max_len=70),
+                    "result": _short_text(case.get("result") or case.get("status"), max_len=48),
+                    "date": _short_text(case.get("date"), max_len=24),
+                    "source_links": _count_case_source_links(case),
+                    "is_top_officer": is_top_officer,
+                    "is_defendant": case_role == "Ответчик",
+                    "is_serious": _is_serious_court_category(str(category)),
+                    "is_unresolved": _is_unresolved_case(case),
+                }
+                rows.append(row_item)
+    return rows
+
+
+def _court_row_risk_score(item: dict[str, Any]) -> int:
+    score = 0
+    if item.get("is_defendant"):
+        score += 4
+    if item.get("is_top_officer"):
+        score += 3
+    if item.get("is_serious"):
+        score += 3
+    if item.get("is_unresolved"):
+        score += 2
+    return score
+
+
+def _build_courts_verdict(rows: list[dict[str, Any]]) -> tuple[str, list[str], str, list[str]]:
+    defendants = [r for r in rows if r.get("is_defendant")]
+    third_party_only = bool(rows) and all(r.get("role_in_case") == "Третья сторона" for r in rows)
+    red_matches = [
+        r
+        for r in rows
+        if r.get("is_top_officer") and r.get("is_defendant") and r.get("is_serious")
+    ]
+
+    if red_matches:
+        sample = red_matches[0]
+        level = "red"
+        why = [
+            "Выявлен руководитель/директор в роли ответчика по серьёзной категории.",
+            f"Категория дела: {sample.get('category')}.",
+            "Это прямой индикатор управленческого и репутационного риска для компании.",
+        ]
+        impact = (
+            "Прямая релевантность к компании: поведение ключевого руководителя влияет "
+            "на юридические, регуляторные и контрагентские риски."
+        )
+        actions = [
+            "Эскалировать кейс на ручную юридическую проверку до одобрения.",
+            "Запросить материалы дела и внутренние объяснения по руководителю.",
+        ]
+        return level, why, impact, actions
+
+    if third_party_only or not defendants:
+        level = "green"
+        why = [
+            "Прямых ролей ответчика не выявлено.",
+            "Участие ограничено третьей стороной или косвенной вовлечённостью.",
+        ]
+        impact = (
+            "Низкая релевантность к риску компании: отсутствуют признаки прямой "
+            "судебной ответственности ключевых лиц."
+        )
+        actions = [
+            "Сохранить периодический мониторинг новых дел.",
+        ]
+        return level, why, impact, actions
+
+    level = "yellow"
+    why = [
+        "Есть дела с участием ответчиков, но без подтверждённого тяжёлого профиля ключевых руководителей.",
+    ]
+    if any(r.get("is_unresolved") for r in defendants):
+        why.append("Часть дел в статусе рассмотрения/без финального исхода.")
+    impact = (
+        "Средняя релевантность к компании: риск может повлиять на контрагентский профиль "
+        "после уточнения исходов и роли участников."
+    )
+    actions = [
+        "Проверить исход и предмет ключевых дел ответчиков.",
+        "Обновить риск-оценку после получения документов.",
+    ]
+    return level, why[:3], impact, actions[:2]
+
+
+def _format_courts_section(row: dict[str, Any], *, max_rows: int = 8) -> str:
+    rows = _collect_court_rows(row)
+    company_name = row.get("company_name") or "Компания"
+    if not rows:
+        return (
+            "Судебные дела по компании и связанным лицам не обнаружены.\n\n"
+            "### Вердикт ИИ по судам\n"
+            "- Уровень риска: green\n"
+            "- Почему:\n"
+            "  - Данные судебных дел отсутствуют или не содержат риск-событий.\n"
+            "- Влияние на компанию: Низкая релевантность — прямые судебные риски не выявлены.\n"
+            "- Следующее действие:\n"
+            "  - Продолжать плановый мониторинг изменений."
+        )
+
+    rows_sorted = sorted(rows, key=_court_row_risk_score, reverse=True)
+    shown = rows_sorted[:max_rows]
+    hidden_count = max(0, len(rows_sorted) - len(shown))
+    total_cases = len(rows_sorted)
+    defendant_count = sum(1 for r in rows_sorted if r.get("is_defendant"))
+    third_party_count = sum(1 for r in rows_sorted if r.get("role_in_case") == "Третья сторона")
+    serious_count = sum(1 for r in rows_sorted if r.get("is_serious"))
+
+    lines = [
+        f"Кейс: {company_name}. Судебных записей: {total_cases}.",
+        (
+            f"Сводка: ответчики {defendant_count}, третья сторона {third_party_count}, "
+            f"серьёзные категории {serious_count}."
+        ),
+        "",
+        "| Person/Entity | Роль в деле | Категория/статья | Результат | Дата | Source link count |",
+        "|---|---|---|---|---|---:|",
+    ]
+    for item in shown:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _short_text(item.get("person_entity"), max_len=46).replace("|", "/"),
+                    _short_text(item.get("role_in_case"), max_len=20).replace("|", "/"),
+                    _short_text(item.get("category"), max_len=70).replace("|", "/"),
+                    _short_text(item.get("result"), max_len=48).replace("|", "/"),
+                    _short_text(item.get("date"), max_len=18).replace("|", "/"),
+                    str(item.get("source_links") or 0),
+                ]
+            )
+            + " |"
+        )
+    if hidden_count > 0:
+        lines.append("")
+        lines.append(f"Прочее: {hidden_count} дел.")
+
+    verdict_level, why, impact, actions = _build_courts_verdict(rows_sorted)
+    lines.extend(
+        [
+            "",
+            "### Вердикт ИИ по судам",
+            f"- Уровень риска: {verdict_level}",
+            "- Почему:",
+        ]
+    )
+    for item in why[:3]:
+        lines.append(f"  - {_short_text(item, max_len=190)}")
+    lines.append(f"- Влияние на компанию: {_short_text(impact, max_len=220)}")
+    lines.append("- Следующее действие:")
+    for action in actions[:2]:
+        lines.append(f"  - {_short_text(action, max_len=170)}")
+    return "\n".join(lines)
+
+
+def _build_section_context(
+    row: dict[str, Any],
+    section: str,
+    *,
+    section_excerpts: dict[str, str] | None = None,
+) -> str:
+    """Build minimal LLM context for a single report section."""
+    company_name = row.get("company_name") or MISSING
+    iin = row.get("iin") or MISSING
+    enriched = row.get("enriched_data") or {}
+    enrichment = enriched.get("enrichment") or {}
+    assessment = enriched.get("assessment") or {}
+    max_chars = _SECTION_MAX_CHARS.get(section, 8000)
+
+    if section == "sanctions":
+        parts = [
+            f"# {company_name} (БИН {iin})",
+            f"Уровень риска: {assessment.get('riskLevel') or row.get('risk_level') or MISSING}",
+        ]
+        lseg_text = _format_lseg_screening_summary(
+            {**enriched, "_company_name": company_name}
+        )
+        parts.append(f"\n## LSEG ПРОВЕРКА\n{lseg_text}")
+        flags = assessment.get("flags") or []
+        if flags:
+            flag_text = "\n".join(
+                f"- [{f.get('severity', '')}] {f.get('message', '')}" for f in flags[:5]
+            )
+            parts.append(f"\n## ФЛАГИ ОЦЕНКИ\n{flag_text}")
+        risk_flags = enrichment.get("riskFlags") or []
+        if risk_flags:
+            parts.append(
+                "\n## ФАКТОРЫ РИСКА (Adata)\n"
+                + "\n".join(f"- {f}" for f in risk_flags[:8])
+            )
+        return _truncate_context("\n".join(parts), max_chars=max_chars)
+
+    if section == "courts":
+        return _truncate_context(_format_courts_section(row), max_chars=max_chars)
+
+    if section == "structure":
+        parts = [f"# {company_name} (БИН {iin})"]
+        affiliate_tree = enriched.get("affiliateTree")
+        if _is_populated(affiliate_tree) and isinstance(affiliate_tree, dict):
+            tree_text = "\n".join(
+                [
+                    f"Статус: {affiliate_tree.get('status', MISSING)}",
+                    f"Узлов: {affiliate_tree.get('nodesCount', 0)}",
+                    _format_affiliate_tree_compact(affiliate_tree),
+                ]
+            )
+            parts.append(f"\n## ДЕРЕВО АФФИЛИАТОВ\n{tree_text}")
+
+        affiliate_enrichments = _collect_affiliate_enrichments(affiliate_tree, max_depth=2)
+        affiliate_analysis = _format_affiliate_analysis(affiliate_enrichments)
+        parts.append(f"\n## АНАЛИЗ АФФИЛИАТОВ\n{affiliate_analysis}")
+
+        affiliate_profiles = enriched.get("affiliateProfiles") or {}
+        if affiliate_profiles:
+            prof_lines = ["\n## ПРОФИЛИ АФФИЛИАТОВ L1"]
+            for bin_val, prof in affiliate_profiles.items():
+                if not isinstance(prof, dict):
+                    continue
+                courts = prof.get("courts") or {}
+                taxes = prof.get("taxes") or {}
+                flags = prof.get("riskFlags") or []
+                line = (
+                    f"- БИН {bin_val}: директор={prof.get('director', '—')}, "
+                    f"суды={courts.get('activeCases', 0)} активных, "
+                    f"налоги={taxes.get('status', '?')}"
+                )
+                if flags:
+                    line += f", флаги: {'; '.join(str(f) for f in flags[:2])}"
+                prof_lines.append(line)
+            parts.append("\n".join(prof_lines))
+
+        beneficiary = enriched.get("beneficiary")
+        if _is_populated(beneficiary) and isinstance(beneficiary, list):
+            ben_lines = [f"Записей UBO: {len(beneficiary)}"]
+            for b in beneficiary[:10]:
+                name_b = b.get("name") or b.get("short_name") or MISSING
+                share = b.get("share") or b.get("ownershipShare") or MISSING
+                ben_lines.append(f"- {name_b} | доля: {share}")
+            parts.append("\n## БЕНЕФИЦИАРЫ\n" + "\n".join(ben_lines))
+
+        relation_extended = enriched.get("relationExtended")
+        if _is_populated(relation_extended) and isinstance(relation_extended, dict):
+            by_head = (
+                relation_extended.get("affiliation_by_head")
+                or relation_extended.get("affiliationByHead")
+                or []
+            )
+            by_founder = (
+                relation_extended.get("affiliation_by_founder")
+                or relation_extended.get("affiliationByFounder")
+                or []
+            )
+            head_list = by_head if isinstance(by_head, list) else []
+            founder_list = by_founder if isinstance(by_founder, list) else []
+            if head_list or founder_list:
+                rel_lines = [f"По руководителю: {len(head_list)}"]
+                for a in head_list[:6]:
+                    rel_lines.append(
+                        f"- {a.get('name', MISSING)} | "
+                        f"{a.get('iin_bin') or a.get('iinBin', MISSING)}"
+                    )
+                rel_lines.append(f"По учредителям: {len(founder_list)}")
+                for a in founder_list[:6]:
+                    rel_lines.append(
+                        f"- {a.get('name', MISSING)} | "
+                        f"{a.get('iin_bin') or a.get('iinBin', MISSING)}"
+                    )
+                parts.append("\n## СВЯЗИ ЧЕРЕЗ ДИРЕКТОРА/УЧРЕДИТЕЛЕЙ\n" + "\n".join(rel_lines))
+
+        trustworthy_plus = enriched.get("trustworthyPlus")
+        if _is_populated(trustworthy_plus) and isinstance(trustworthy_plus, dict):
+            tp_text = _format_trustworthy_plus_summary(trustworthy_plus)
+            if tp_text:
+                parts.append(f"\n## TRUSTWORTHY-PLUS\n{tp_text}")
+
+        return _truncate_context("\n".join(parts), max_chars=max_chars)
+
+    if section == "summary":
+        parts = [
+            f"# {company_name} (БИН {iin})",
+            f"Уровень риска: {assessment.get('riskLevel') or row.get('risk_level') or MISSING}",
+            f"Итоговый балл: {enriched.get('totalScore') if enriched.get('totalScore') is not None else MISSING}",
+        ]
+        if section_excerpts:
+            for key, title in (
+                ("sanctions", "Санкционный анализ"),
+                ("courts", "Судебные дела"),
+                ("structure", "Структура и аффилиаты"),
+            ):
+                excerpt = (section_excerpts.get(key) or "")[:1500]
+                parts.append(f"\n## {title}\n{excerpt or MISSING}")
+        score_breakdown = enriched.get("scoreBreakdown")
+        if _is_populated(score_breakdown):
+            score_lines = []
+            for m in score_breakdown[:7]:
+                score_lines.append(
+                    f"- {m.get('metric', '')}: {m.get('points', m.get('score', 0))} — "
+                    f"{m.get('reason', m.get('label', ''))}"
+                )
+            parts.append("\n## СКОРИНГ\n" + "\n".join(score_lines))
+        return _truncate_context("\n".join(parts), max_chars=max_chars)
+
+    return MISSING
+
+
+def _template_section_fallback(row: dict[str, Any], section: str) -> str:
+    """Template fallback for a single section when LLM call fails."""
+    enriched = row.get("enriched_data") or {}
+    enrichment = enriched.get("enrichment") or {}
+    assessment = enriched.get("assessment") or {}
+    company_name = row.get("company_name") or MISSING
+
+    if section == "sanctions":
+        lseg = enriched.get("lseg")
+        if lseg:
+            return _format_lseg_screening_summary(
+                {**enriched, "_company_name": company_name}
+            )
+        flags = assessment.get("flags") or []
+        if flags:
+            return "\n".join(f"- {f.get('message', '')}" for f in flags[:5])
+        return "Санкционные данные LSEG отсутствуют."
+
+    if section == "courts":
+        return _format_courts_section(row)
+
+    if section == "structure":
+        affiliate_tree = enriched.get("affiliateTree")
+        affiliate_enrichments = _collect_affiliate_enrichments(affiliate_tree, max_depth=2)
+        tree_part = ""
+        if _is_populated(affiliate_tree) and isinstance(affiliate_tree, dict):
+            tree_part = _format_affiliate_tree_compact(affiliate_tree)
+        analysis = _format_affiliate_analysis(affiliate_enrichments)
+        return f"{tree_part}\n\n{analysis}".strip() or "Данные по структуре отсутствуют."
+
+    if section == "summary":
+        risk = assessment.get("riskLevel") or row.get("risk_level") or MISSING
+        summary = assessment.get("summary") or MISSING
+        score = enriched.get("totalScore")
+        score_part = f" Балл: {score}." if score is not None else ""
+        return f"{summary}{score_part} Уровень риска: {risk}."
+
+    return MISSING
+
+
+def _sanitize_llm_text(text: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    return re.sub(r"<[^>]+>", "", text)
+
+
+def _split_sentences(text: str, *, limit: int = 10) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    return [p.strip(" -\t") for p in parts if p.strip()][:limit]
+
+
+def _is_unstructured_plain_text(text: str) -> bool:
+    if not text.strip():
+        return True
+    has_md = bool(re.search(r"(^|\n)\s*(#{1,4}\s|[-*]\s|\d+\.\s)", text))
+    long_line = any(len(line) > 260 for line in text.splitlines() if line.strip())
+    return not has_md or long_line
+
+
+def _make_readable_markdown(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return MISSING
+    if not _is_unstructured_plain_text(stripped):
+        return stripped
+    sentences = _split_sentences(stripped, limit=8)
+    if not sentences:
+        return stripped
+    lines = ["### Ключевые наблюдения"]
+    for sentence in sentences:
+        lines.append(f"- {sentence[:240]}")
+    return "\n".join(lines)
+
+
+def _extract_key_findings(text: str, *, max_items: int = 2) -> list[str]:
+    findings: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("### Краткое сведение"):
+            break
+        if line.startswith(("- ", "* ")):
+            candidate = line[2:].strip()
+            if candidate:
+                findings.append(candidate[:170])
+        elif line and not line.startswith("#") and len(line) > 20:
+            findings.append(line[:170])
+        if len(findings) >= max_items:
+            break
+    if findings:
+        return findings[:max_items]
+    return _split_sentences(text, limit=max_items)
+
+
+def _infer_risk_tag(section: str, text: str) -> str:
+    lowered = text.lower()
+    red_markers = (
+        "санкц",
+        "pep",
+        "ответчик",
+        "уголов",
+        "высок",
+        "критич",
+        "задолж",
+    )
+    yellow_markers = ("средн", "провер", "совпад", "иск", "налог")
+    if any(marker in lowered for marker in red_markers):
+        return "red flag"
+    if any(marker in lowered for marker in yellow_markers):
+        return "yellow flag"
+    if section == "sanctions" and "чист" in lowered:
+        return "green flag"
+    return "green flag"
+
+
+def _recommended_next_action(section: str, risk_tag: str) -> str:
+    if section == "sanctions":
+        if risk_tag == "red flag":
+            return "Запросить расширенную KYC/санкционную проверку и эскалировать комплаенс-офицеру."
+        if risk_tag == "yellow flag":
+            return "Провести ручную верификацию совпадений и обновить скрининг по уточнённым данным."
+        return "Зафиксировать результат и повторить санкционный скрининг перед сделкой."
+    if section == "courts":
+        if risk_tag == "red flag":
+            return "Проверить материалы дел и приостановить согласование до юридического заключения."
+        if risk_tag == "yellow flag":
+            return "Запросить детали по ключевым делам и оценить финансовое влияние."
+        return "Сохранить мониторинг судебной активности на период сделки."
+    if risk_tag == "red flag":
+        return "Запросить подтверждающие документы по структуре и цепочке владения."
+    if risk_tag == "yellow flag":
+        return "Уточнить непрозрачные связи и обновить карту аффилиатов."
+    return "Принять структуру к сведению и выполнить плановый повторный скрининг."
+
+
+def _append_takeaway_block(section: str, text: str) -> str:
+    normalized = text.strip()
+    if "### Краткое сведение" in normalized:
+        return normalized
+    findings = _extract_key_findings(normalized, max_items=2)
+    if not findings:
+        findings = ["Данные раздела ограничены или отсутствуют."]
+    risk_tag = _infer_risk_tag(section, normalized)
+    action = _recommended_next_action(section, risk_tag)
+    block_lines = ["### Краткое сведение"]
+    for item in findings[:2]:
+        block_lines.append(f"- Ключевой вывод: {item}")
+    block_lines.append(f"- Риск: {risk_tag}")
+    block_lines.append(f"- Следующее действие: {action}")
+    return f"{normalized}\n\n" + "\n".join(block_lines)
+
+
+def _normalize_section_output(section: str, text: str) -> str:
+    if section == "courts":
+        return _sanitize_llm_text(text or "").strip() or MISSING
+    base = _sanitize_llm_text(text or "").strip()
+    readable = _make_readable_markdown(base)
+    return _append_takeaway_block(section, readable)
+
+
+def _combine_sectional_report(
+    company_name: str,
+    summary: str,
+    sections: dict[str, str],
+    sources_hint: str,
+) -> str:
+    sanctions = _normalize_section_output("sanctions", sections.get("sanctions", MISSING))
+    courts = _normalize_section_output("courts", sections.get("courts", MISSING))
+    structure = _normalize_section_output("structure", sections.get("structure", MISSING))
+    return (
+        f"# Отчёт\n\n"
+        f"## Резюме\n{summary.strip()}\n\n"
+        f"## 1. Санкционный анализ\n{sanctions}\n\n"
+        f"## 2. Судебные дела\n{courts}\n\n"
+        f"## 3. Структура\n{structure}\n"
+    )
+
+
+async def _call_llm_section(
+    client: Any,
+    section: str,
+    context: str,
+    company_name: str,
+) -> str:
+    system_prompt = _SECTION_PROMPTS[section]
+    user_prompts = {
+        "sanctions": f"Составь раздел санкционного анализа для «{company_name}».",
+        "courts": f"Составь раздел судебных дел и рисков для «{company_name}».",
+        "structure": f"Составь раздел структуры и аффилиатов для «{company_name}».",
+        "summary": f"Составь executive summary для «{company_name}».",
+    }
+    response = await client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": f"{context}\n\n{user_prompts[section]}",
+            },
+        ],
+        temperature=0.2,
+        max_tokens=1200 if section == "summary" else 1500,
+    )
+    content = response.choices[0].message.content or ""
+    return _normalize_section_output(section, content) if section != "summary" else _sanitize_llm_text(content)
+
+
 def _format_affiliate_analysis(affiliates: list[dict]) -> str:
     if not affiliates:
         return "Данные по аффилиатам отсутствуют или не загружены."
@@ -355,43 +1128,45 @@ def _format_affiliate_analysis(affiliates: list[dict]) -> str:
 
         if _is_low_risk_affiliate(aff):
             lines.append(
-                f"- {name} (БИН {iin_bin}, {role or '—'}) — низкий риск, чисто"
+                f"- {name} (БИН `{iin_bin}`, {role or '—'}) — низкий риск, чисто"
             )
             continue
 
         lines.append(f"\n### {name} (БИН: {iin_bin})")
-        lines.append(f"Роль: {role or '—'} | Уровень риска: {risk}")
+
+        lines.append(f"- **Роль:** {role or '—'}")
+        lines.append(f"- **Уровень риска:** {risk}")
 
         if aff.get("director"):
-            lines.append(f"Директор: {aff['director']}")
+            lines.append(f"- **Директор:** {aff['director']}")
 
         courts = aff.get("courts") or {}
         if courts:
             active = courts.get("activeCases", 0)
             total_amt = courts.get("totalAmount", 0) or 0
             lines.append(
-                f"Судебные дела: активных {active}, сумма {total_amt:,.0f} тг".replace(
-                    ",", " "
+                f"- **Судебные дела:** активных {active}, сумма {total_amt:,.0f} тг".replace(
+                    ",", "\u202f"
                 )
             )
             for case in (courts.get("cases") or [])[:3]:
-                lines.append(f"  {_format_court_case_line(case).lstrip('- ')}")
+                lines.append(f"  - {_format_court_case_line(case).lstrip('- ')}")
         else:
-            lines.append("Судебные дела: нет данных")
+            lines.append("- **Судебные дела:** нет данных")
 
         taxes = aff.get("taxes") or {}
         if taxes:
             status = taxes.get("status", "")
             debt = taxes.get("debt", 0) or 0
             lines.append(
-                f"Налоги: статус={status}, задолженность={debt:,.0f} тг".replace(
-                    ",", " "
+                f"- **Налоги:** статус={status}, задолженность={debt:,.0f} тг".replace(
+                    ",", "\u202f"
                 )
             )
 
         flags = aff.get("riskFlags") or []
         if flags:
-            lines.append(f"Риск-флаги: {'; '.join(str(f) for f in flags)}")
+            lines.append(f"- **Риск-флаги:** {'; '.join(str(f) for f in flags)}")
 
         lseg = aff.get("lseg")
         if lseg:
@@ -399,18 +1174,18 @@ def _format_affiliate_analysis(affiliates: list[dict]) -> str:
             pep = lseg.get("pep") or {}
             if san.get("isOnList"):
                 matched = san.get("matchedLists") or []
-                lines.append(f"LSEG САНКЦИИ: {', '.join(matched[:3])}")
+                lines.append(f"- **LSEG САНКЦИИ:** {', '.join(matched[:3])}")
             if pep.get("isHit"):
-                lines.append("LSEG PEP: обнаружено совпадение")
+                lines.append("- **LSEG PEP:** обнаружено совпадение")
             if not san.get("isOnList") and not pep.get("isHit"):
-                lines.append("LSEG: чисто")
+                lines.append("- **LSEG:** чисто")
         else:
-            lines.append("LSEG: не проверялось")
+            lines.append("- **LSEG:** не проверялось")
 
         sanctions = aff.get("sanctions") or {}
         if sanctions.get("isOnList"):
             lists = sanctions.get("lists") or []
-            lines.append(f"Adata санкции/риски: {', '.join(str(x) for x in lists[:3])}")
+            lines.append(f"- **Adata санкции/риски:** {', '.join(str(x) for x in lists[:3])}")
 
     return "\n".join(lines)
 
@@ -878,12 +1653,7 @@ LSEG скрининг нерезидентов:
 ## 7. Рекомендация
 {recommendation}
 {rec_reason}
-
-## 8. Источники данных
-{sources_section}
-
----
-_Отчёт сгенерирован в режиме шаблона (без LLM). Для полного анализа добавьте OPENAI_API_KEY._"""
+"""
 
 
 async def generate_full_report(case_id: str) -> str:
@@ -892,10 +1662,20 @@ async def generate_full_report(case_id: str) -> str:
     if row is None:
         raise ValueError(f"Case {case_id} not found")
 
-    context = _build_full_context(row)
-    approx_tokens = len(context) // 4
-    logger.info("Full report context: ~%d tokens for case %s", approx_tokens, case_id)
+    company_name = row.get("company_name", MISSING)
+    enriched = row.get("enriched_data") or {}
+    sources_list = _list_data_sources(enriched)
+    sources_hint = (
+        "\n".join(f"- {s}" for s in sources_list) if sources_list else MISSING
+    )
     report = ""
+    append_case_event(
+        case_id,
+        provider="AI",
+        action="full_report:start",
+        subject={"type": "case", "value": case_id, "name": company_name},
+        outcome={"status": "ok", "meta": {"availableBlocks": sources_list}},
+    )
 
     if settings.openai_api_key:
         try:
@@ -905,54 +1685,150 @@ async def generate_full_report(case_id: str) -> str:
             if settings.openai_base_url:
                 client_kwargs["base_url"] = settings.openai_base_url
             client = AsyncOpenAI(**client_kwargs)
-            company_name = row.get("company_name", MISSING)
-            sources_list = _list_data_sources(row.get("enriched_data") or {})
-            sources_hint = (
-                "\n".join(f"- {s}" for s in sources_list) if sources_list else MISSING
+
+            section_names = ("sanctions", "courts", "structure")
+            sections: dict[str, str] = {}
+
+            for section in section_names:
+                if section == "courts":
+                    sections[section] = _format_courts_section(row)
+                    append_case_event(
+                        case_id,
+                        provider="AI",
+                        action=f"full_report:section:{section}",
+                        outcome={
+                            "status": "ok",
+                            "meta": {
+                                "mode": "deterministic_heuristic",
+                                "availableBlocks": sources_list,
+                            },
+                        },
+                    )
+                    continue
+                context = _build_section_context(row, section)
+                approx_tokens = len(context) // 4
+                logger.info(
+                    "Full report section [%s]: ~%d tokens for case %s",
+                    section,
+                    approx_tokens,
+                    case_id,
+                )
+                try:
+                    sections[section] = await _call_llm_section(
+                        client, section, context, company_name
+                    )
+                    append_case_event(
+                        case_id,
+                        provider="AI",
+                        action=f"full_report:section:{section}",
+                        outcome={
+                            "status": "ok",
+                            "meta": {
+                                "mode": "llm",
+                                "approxTokens": approx_tokens,
+                                "availableBlocks": sources_list,
+                            },
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "OpenAI section %s failed for %s: %s",
+                        section,
+                        case_id,
+                        exc,
+                    )
+                    sections[section] = _normalize_section_output(
+                        section, _template_section_fallback(row, section)
+                    )
+                    append_case_event(
+                        case_id,
+                        provider="AI",
+                        action=f"full_report:section:{section}",
+                        outcome={
+                            "status": "error",
+                            "meta": {
+                                "mode": "template_fallback",
+                                "approxTokens": approx_tokens,
+                                "availableBlocks": sources_list,
+                            },
+                            "message": str(exc)[:200],
+                        },
+                    )
+
+            summary_context = _build_section_context(
+                row, "summary", section_excerpts=sections
             )
-            response = await client.chat.completions.create(
-                model=settings.openai_model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"{context}\n\n"
-                            f"Составь отчёт по контрагенту «{company_name}» "
-                            "согласно структуре из системного промпта.\n\n"
-                            f"Источники данных (используй только этот список):\n{sources_hint}"
-                        ),
+            try:
+                summary = await _call_llm_section(
+                    client, "summary", summary_context, company_name
+                )
+                append_case_event(
+                    case_id,
+                    provider="AI",
+                    action="full_report:section:summary",
+                    outcome={
+                        "status": "ok",
+                        "meta": {"mode": "llm", "availableBlocks": sources_list},
                     },
-                ],
-                temperature=0.2,
-                max_tokens=2000,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "OpenAI summary failed for %s: %s", case_id, exc
+                )
+                summary = _template_section_fallback(row, "summary")
+                append_case_event(
+                    case_id,
+                    provider="AI",
+                    action="full_report:section:summary",
+                    outcome={
+                        "status": "error",
+                        "meta": {"mode": "template_fallback", "availableBlocks": sources_list},
+                        "message": str(exc)[:200],
+                    },
+                )
+
+            report = _combine_sectional_report(
+                company_name, summary, sections, sources_hint
             )
-            report = response.choices[0].message.content or ""
-            # Sanitize HTML tags that break markdown rendering
-            import re as _re
-            report = _re.sub(r'<br\s*/?>', '\n', report)
-            report = _re.sub(r'<[^>]+>', '', report)
         except Exception as exc:
             logger.warning(
-                "OpenAI full report generation failed for %s: %s", case_id, exc
+                "OpenAI sectional full report failed for %s: %s", case_id, exc
+            )
+            append_case_event(
+                case_id,
+                provider="AI",
+                action="full_report:openai_error",
+                outcome={"status": "error", "message": str(exc)[:200]},
             )
 
     if not report:
         report = _template_full_report(row)
-    else:
-        sources_list = _list_data_sources(row.get("enriched_data") or {})
-        sources_hint = (
-            "\n".join(f"- {s}" for s in sources_list) if sources_list else MISSING
+        append_case_event(
+            case_id,
+            provider="AI",
+            action="full_report:template",
+            outcome={"status": "ok", "meta": {"mode": "template", "availableBlocks": sources_list}},
         )
-        if "Источники данных" not in report:
-            report = report.rstrip() + (
-                f"\n\n## 8. Источники данных\n{sources_hint}\n"
-            )
 
-    enriched = row.get("enriched_data") or {}
-    enriched["fullReport"] = report
-    enriched["fullReportGeneratedAt"] = datetime.now(timezone.utc).isoformat()
-    db.update_case(case_id, enriched_data=enriched)
+    # Reload fresh enriched data so the verification log events added during
+    # section generation are not overwritten by the stale local `enriched` dict.
+    fresh_row = db.get_case(case_id)
+    save_enriched: dict = {}
+    if fresh_row is not None:
+        fresh_data = fresh_row.get("enriched_data") or {}
+        save_enriched = fresh_data if isinstance(fresh_data, dict) else {}
+    else:
+        save_enriched = enriched
+
+    save_enriched["fullReport"] = report
+    save_enriched["fullReportGeneratedAt"] = datetime.now(timezone.utc).isoformat()
+    db.update_case(case_id, enriched_data=save_enriched)
 
     logger.info("Full report saved for case %s", case_id)
+    append_case_event(
+        case_id,
+        provider="AI",
+        action="full_report:saved",
+        outcome={"status": "ok"},
+    )
     return report

@@ -38,24 +38,24 @@ export function MarkdownContent({
         remarkPlugins={[remarkGfm]}
         components={{
           h1: ({ children: c }) => (
-            <h1 className={cn('text-xl font-bold mt-4 mb-2 first:mt-0', heading)}>{c}</h1>
+            <h1 className={cn('text-2xl font-bold mt-6 mb-3 first:mt-0', heading)}>{c}</h1>
           ),
           h2: ({ children: c }) => (
-            <h2 className={cn('text-lg font-semibold mt-4 mb-2 first:mt-0', heading)}>{c}</h2>
+            <h2 className={cn('text-xl font-semibold mt-6 mb-3 first:mt-0', heading)}>{c}</h2>
           ),
           h3: ({ children: c }) => (
-            <h3 className={cn('text-base font-semibold mt-3 mb-1.5 first:mt-0', heading)}>{c}</h3>
+            <h3 className={cn('text-lg font-semibold mt-4 mb-2 first:mt-0', heading)}>{c}</h3>
           ),
           p: ({ children: c }) => (
-            <p className={cn('mb-2 last:mb-0 leading-relaxed', text)}>{c}</p>
+            <p className={cn('mb-3 last:mb-0 leading-7', text)}>{c}</p>
           ),
           strong: ({ children: c }) => <strong className="font-semibold">{c}</strong>,
           em: ({ children: c }) => <em className="italic">{c}</em>,
           ul: ({ children: c }) => (
-            <ul className={cn('list-disc pl-5 mb-2 space-y-1', text)}>{c}</ul>
+            <ul className={cn('list-disc pl-5 mb-3 space-y-1.5', text)}>{c}</ul>
           ),
           ol: ({ children: c }) => (
-            <ol className={cn('list-decimal pl-5 mb-2 space-y-1', text)}>{c}</ol>
+            <ol className={cn('list-decimal pl-5 mb-3 space-y-1.5', text)}>{c}</ol>
           ),
           li: ({ children: c }) => <li className="leading-relaxed">{c}</li>,
           hr: () => <hr className={cn('my-4', border)} />,
@@ -70,15 +70,15 @@ export function MarkdownContent({
             </blockquote>
           ),
           table: ({ children: c }) => (
-            <div className={cn('my-3 overflow-x-auto rounded-lg border', border)}>
-              <table className={cn('min-w-full text-xs', tableDivide)}>{c}</table>
+            <div className={cn('my-3 overflow-x-auto rounded-lg border bg-white/5', border)}>
+              <table className={cn('min-w-full border-collapse text-sm leading-6', tableDivide)}>{c}</table>
             </div>
           ),
           thead: ({ children: c }) => <thead className={tableHeadBg}>{c}</thead>,
           th: ({ children: c }) => (
             <th
               className={cn(
-                'px-3 py-2 text-left font-semibold border-b',
+                'px-3 py-2 text-left font-semibold border-b whitespace-nowrap',
                 thText,
                 border,
               )}
@@ -87,7 +87,7 @@ export function MarkdownContent({
             </th>
           ),
           td: ({ children: c }) => (
-            <td className={cn('px-3 py-2 align-top border-b', tdText, tdBorder)}>{c}</td>
+            <td className={cn('px-3 py-2 align-top border-b whitespace-nowrap', tdText, tdBorder)}>{c}</td>
           ),
           tr: ({ children: c }) => <tr>{c}</tr>,
           code: ({ className: codeClassName, children: c }) => {

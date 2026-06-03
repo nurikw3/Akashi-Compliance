@@ -19,6 +19,10 @@ import {
   ShieldCheck,
   TrendingUp,
   Globe,
+  ListChecks,
+  ChevronDown,
+  ChevronRight,
+  Database,
 } from 'lucide-react'
 import { downloadCaseReport, fetchAiStatus, rescreenAllWithLseg } from '@/lib/api'
 import { useCases } from '@/lib/cases-context'
@@ -27,11 +31,11 @@ import { LoadingGif } from '@/components/loading-gif'
 import { MarkdownContent } from '@/components/markdown-content'
 import { dataSourceLabel, sectionSource } from '@/lib/data-source-label'
 import { caseDisplayName, formatPersonField } from '@/lib/case-display'
-import type { Case, DataSourceKind, ScoreMetric, LsegData, LsegSanctionHit, LsegExtendedEntity } from '@/lib/types'
+import type { Case, DataSourceKind, ScoreMetric, LsegData, LsegSanctionHit, LsegExtendedEntity, IndividualCourtCase, VerificationLogEvent } from '@/lib/types'
 
-type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'scoring' | 'lseg'
+type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'scoring' | 'lseg' | 'log'
 
-const VALID_TABS: Tab[] = ['data', 'documents', 'assessment', 'chat', 'scoring', 'lseg']
+const VALID_TABS: Tab[] = ['data', 'documents', 'assessment', 'chat', 'scoring', 'lseg', 'log']
 
 function SectionHeading({
   icon: Icon,
@@ -55,6 +59,165 @@ function SectionHeading({
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat('ru-RU').format(amount) + ' тг'
+}
+
+function IndividualCourtsSection({ caseData }: { caseData: Case }) {
+  const [expandedCases, setExpandedCases] = useState<Set<string>>(new Set())
+  const individualCourts = caseData.individualCourts
+  const individualCourtsMeta = caseData.individualCourtsMeta ?? {}
+  const entries = individualCourts ? Object.entries(individualCourts) : []
+  const hasData = entries.some(([, cases]) => (cases?.length ?? 0) > 0)
+  const directorIin =
+    caseData.enrichment?.companyInfo?.director_iin ??
+    Object.keys(individualCourtsMeta)[0] ??
+    null
+
+  const toggleCase = (key: string) => {
+    setExpandedCases((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-neutral-200 p-5">
+      <SectionHeading
+        icon={Gavel}
+        iconClassName="text-violet-600"
+        title="Судебные дела (персональные)"
+        source="adata"
+      />
+      {!hasData ? (
+        <p className="text-sm text-neutral-500">
+          {directorIin
+            ? `Персональные судебные дела не найдены (ИИН ${directorIin})`
+            : 'Персональные судебные дела не найдены (ИИН директора недоступен)'}
+        </p>
+      ) : (
+        <div className="space-y-6">
+          {entries.map(([iin, cases]) => {
+            if (!cases?.length) return null
+            const meta = individualCourtsMeta[iin]
+            const personName = meta?.name || `ИИН ${iin}`
+            return (
+              <div key={iin} className="border border-neutral-100 rounded-lg p-4">
+                <div className="mb-4">
+                  <p className="font-medium text-neutral-900">{personName}</p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-neutral-500 mt-1">
+                    <span className="font-mono">ИИН: {iin}</span>
+                    {meta?.role && <span>Роль: {meta.role}</span>}
+                    {meta?.companyName && <span>Компания: {meta.companyName}</span>}
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  {cases.map((courtCase: IndividualCourtCase, idx) => {
+                    const caseKey = `${iin}-${courtCase.number || idx}`
+                    const isExpanded = expandedCases.has(caseKey)
+                    return (
+                      <div
+                        key={caseKey}
+                        className="bg-neutral-50 rounded-lg border border-neutral-100 overflow-hidden"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => toggleCase(caseKey)}
+                          className="w-full flex items-start gap-2 p-3 text-left hover:bg-neutral-100/80 transition-colors"
+                        >
+                          {isExpanded ? (
+                            <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-neutral-400" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-neutral-400" />
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                              <span className="font-medium text-neutral-900">
+                                {courtCase.number || '—'}
+                              </span>
+                              <span className="text-neutral-400">•</span>
+                              <span className="text-neutral-700">{courtCase.type || '—'}</span>
+                            </div>
+                            <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-neutral-500 mt-1">
+                              <span>{courtCase.court || '—'}</span>
+                              <span>{courtCase.date || '—'}</span>
+                              {courtCase.result && (
+                                <span className="text-neutral-700">{courtCase.result}</span>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                        {isExpanded &&
+                          ((courtCase.history?.length ?? 0) > 0 ||
+                            (courtCase.documents?.length ?? 0) > 0) && (
+                          <div className="px-3 pb-3 pt-0 ml-6 border-t border-neutral-100">
+                            {(courtCase.documents?.length ?? 0) > 0 && (
+                              <div className="mt-3 mb-4">
+                                <p className="text-xs text-neutral-500 mb-2">Документы по делу</p>
+                                <div className="flex flex-wrap gap-3">
+                                  {courtCase.documents!.map((doc, docIdx) => (
+                                    <a
+                                      key={docIdx}
+                                      href={doc.doc_link ?? '#'}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-600 hover:underline text-sm"
+                                    >
+                                      📄 {doc.file_name || 'Документ'}
+                                    </a>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {(courtCase.history?.length ?? 0) > 0 && (
+                            <>
+                            <p className="text-xs text-neutral-500 mt-3 mb-2">История событий</p>
+                            <div className="space-y-2">
+                              {courtCase.history!.map((event, eventIdx) => (
+                                <div
+                                  key={eventIdx}
+                                  className="text-sm bg-white rounded-md border border-neutral-100 p-2.5"
+                                >
+                                  <div className="flex flex-wrap gap-x-2 text-neutral-700">
+                                    <span className="text-neutral-500">{event.event_date}</span>
+                                    <span>{event.name}</span>
+                                  </div>
+                                  {(event.documents?.length ?? 0) > 0 && (
+                                    <div className="mt-2 flex flex-wrap gap-3">
+                                      {event.documents!.map((doc, docIdx) => (
+                                        <a
+                                          key={docIdx}
+                                          href={doc.doc_link}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-blue-600 hover:underline text-sm"
+                                        >
+                                          📄 {doc.file_name}
+                                        </a>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                            </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => void }) {
@@ -286,6 +449,8 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           <p className="text-sm text-neutral-500">Нет данных</p>
         )}
       </div>
+
+      <IndividualCourtsSection caseData={caseData} />
 
       {/* Risk / compliance */}
       <div className="bg-white rounded-xl border border-neutral-200 p-5">
@@ -1335,6 +1500,338 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
   )
 }
 
+// ─── Verification log ─────────────────────────────────────────────────────
+
+const ACTION_META: Record<string, { label: string; icon: string; group: 'adata' | 'lseg' | 'ai' | 'system' }> = {
+  'company_info':                    { label: 'Базовая информация о компании',        icon: '🏢', group: 'adata' },
+  'company_info (cached)':           { label: 'Базовая информация (кэш)',             icon: '🏢', group: 'adata' },
+  'director_iin':                    { label: 'ИИН директора',                        icon: '👤', group: 'adata' },
+  'director_iin (cached)':           { label: 'ИИН директора (кэш)',                  icon: '👤', group: 'adata' },
+  'individual_courts':               { label: 'Персональные судебные дела',           icon: '⚖️', group: 'adata' },
+  'individual_courts (cached)':      { label: 'Персональные судебные дела (кэш)',     icon: '⚖️', group: 'adata' },
+  'trustworthy_plus':                { label: 'Trustworthy-Plus',                     icon: '📊', group: 'adata' },
+  'trustworthy_plus (cached)':       { label: 'Trustworthy-Plus (кэш)',               icon: '📊', group: 'adata' },
+  'beneficiary':                     { label: 'Бенефициары (UBO)',                    icon: '🔗', group: 'adata' },
+  'beneficiary (cached)':            { label: 'Бенефициары (UBO, кэш)',               icon: '🔗', group: 'adata' },
+  'non_resident_affiliations':       { label: 'Нерезиденты',                         icon: '🌍', group: 'adata' },
+  'non_resident_affiliations (cached)': { label: 'Нерезиденты (кэш)',                icon: '🌍', group: 'adata' },
+  'relation_extended':               { label: 'Связанные лица',                      icon: '🔗', group: 'adata' },
+  'relation_extended (cached)':      { label: 'Связанные лица (кэш)',                 icon: '🔗', group: 'adata' },
+  'affiliate_tree':                  { label: 'Дерево аффилиатов',                   icon: '🌲', group: 'adata' },
+  'affiliate_tree (cached)':         { label: 'Дерево аффилиатов (кэш)',              icon: '🌲', group: 'adata' },
+  'director_profile':                { label: 'Профиль директора',                   icon: '👤', group: 'adata' },
+  'director_profile (cached)':       { label: 'Профиль директора (кэш)',              icon: '👤', group: 'adata' },
+  'affiliate_profile':               { label: 'Данные аффилиата',                    icon: '🏢', group: 'adata' },
+  'affiliate_profile (cached)':      { label: 'Данные аффилиата (кэш)',               icon: '🏢', group: 'adata' },
+  'lseg:screen':                     { label: 'Скрининг компании и директора',        icon: '🛡️', group: 'lseg' },
+  'lseg:extended':                   { label: 'Расширенный скрининг связанных лиц',  icon: '🛡️', group: 'lseg' },
+  'lseg:extended_entity':            { label: 'Скрининг связанного лица',            icon: '🛡️', group: 'lseg' },
+  'full_report:start':               { label: 'Запуск генерации ИИ-отчёта',          icon: '🤖', group: 'ai' },
+  'full_report:section:sanctions':   { label: 'Секция: Санкционный анализ',          icon: '🛡️', group: 'ai' },
+  'full_report:section:courts':      { label: 'Секция: Судебные дела',               icon: '⚖️', group: 'ai' },
+  'full_report:section:structure':   { label: 'Секция: Структура и аффилиаты',       icon: '🏢', group: 'ai' },
+  'full_report:section:summary':     { label: 'Секция: Итоговое резюме',             icon: '📋', group: 'ai' },
+  'full_report:saved':               { label: 'ИИ-отчёт сохранён',                  icon: '✅', group: 'ai' },
+  'full_report:template':            { label: 'ИИ-отчёт (шаблон, без LLM)',          icon: '📄', group: 'ai' },
+  'full_report:openai_error':        { label: 'Ошибка OpenAI',                       icon: '❌', group: 'ai' },
+  'conclusion:saved':                { label: 'ИИ-заключение сохранено',             icon: '✅', group: 'ai' },
+  'conclusion':                      { label: 'Генерация ИИ-заключения',             icon: '🤖', group: 'ai' },
+  'process_case:start':              { label: 'Запуск обработки кейса',              icon: '⚙️', group: 'system' },
+}
+
+const MODE_LABELS: Record<string, { label: string; cls: string }> = {
+  'llm':                    { label: 'LLM',          cls: 'bg-violet-50 text-violet-700 border-violet-200' },
+  'template_fallback':      { label: 'Шаблон',       cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  'deterministic_heuristic':{ label: 'Авто',         cls: 'bg-sky-50 text-sky-700 border-sky-200' },
+  'template':               { label: 'Шаблон',       cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+}
+
+const GROUP_CONFIG: Record<string, { label: string; headerCls: string; dotCls: string }> = {
+  adata:  { label: 'Adata',       headerCls: 'bg-blue-50 border-blue-200 text-blue-700',   dotCls: 'bg-blue-500' },
+  lseg:   { label: 'LSEG',        headerCls: 'bg-purple-50 border-purple-200 text-purple-700', dotCls: 'bg-purple-500' },
+  ai:     { label: 'ИИ',          headerCls: 'bg-indigo-50 border-indigo-200 text-indigo-700', dotCls: 'bg-indigo-500' },
+  system: { label: 'Pipeline',    headerCls: 'bg-neutral-50 border-neutral-200 text-neutral-600', dotCls: 'bg-neutral-400' },
+}
+
+// Derive data coverage from actual case fields (works even for old cases without full logs)
+function buildDataCoverage(caseData: Case) {
+  const e = caseData.enrichment
+  const individualCourtCount = caseData.individualCourts
+    ? Object.values(caseData.individualCourts).reduce((s, arr) => s + arr.length, 0)
+    : 0
+  const lsegExtCount = caseData.lsegExtended ? Object.keys(caseData.lsegExtended).length : 0
+  const beneficiaryCount = caseData.beneficiary?.length ?? 0
+  const treeNodes = (caseData as unknown as Record<string, unknown>).affiliateTree
+    ? ((caseData as unknown as Record<string, { nodesCount?: number }>).affiliateTree?.nodesCount ?? '?')
+    : null
+
+  const items = [
+    {
+      label: 'Базовая информация',
+      provider: 'Adata',
+      available: !!e?.companyInfo,
+      detail: e?.companyInfo?.director ? `Директор: ${e.companyInfo.director}` : undefined,
+      endpoint: '/company/info',
+    },
+    {
+      label: 'Судебные дела (компания)',
+      provider: 'Adata',
+      available: !!e?.courts,
+      detail: e?.courts ? `${e.courts.activeCases} активных` : undefined,
+      endpoint: '/company/courtcase',
+    },
+    {
+      label: 'Суды (персональные)',
+      provider: 'Adata',
+      available: individualCourtCount > 0,
+      detail: individualCourtCount > 0 ? `${individualCourtCount} дел` : undefined,
+      endpoint: '/individual/info',
+    },
+    {
+      label: 'Бенефициары (UBO)',
+      provider: 'Adata',
+      available: beneficiaryCount > 0,
+      detail: beneficiaryCount > 0 ? `${beneficiaryCount} записей` : undefined,
+      endpoint: '/company/beneficiary',
+    },
+    {
+      label: 'Дерево аффилиатов',
+      provider: 'Adata',
+      available: !!treeNodes,
+      detail: treeNodes ? `${treeNodes} узлов` : undefined,
+      endpoint: '/company/affiliates',
+    },
+    {
+      label: 'Скрининг компании',
+      provider: 'LSEG',
+      available: !!caseData.lseg,
+      detail: caseData.lseg
+        ? ((caseData.lseg.sanctions as { isOnList?: boolean } | undefined)?.isOnList
+            ? '⚠ Совпадения найдены'
+            : '✓ Чисто')
+        : undefined,
+      endpoint: 'World-Check One',
+    },
+    {
+      label: 'Расширенный скрининг',
+      provider: 'LSEG',
+      available: lsegExtCount > 0,
+      detail: lsegExtCount > 0 ? `${lsegExtCount} лиц проверено` : undefined,
+      endpoint: 'World-Check One (extended)',
+    },
+    {
+      label: 'Скоринг (7 метрик)',
+      provider: 'ИИ',
+      available: !!caseData.scoreBreakdown,
+      detail: caseData.totalScore != null ? `Балл: ${caseData.totalScore}` : undefined,
+      endpoint: 'Внутренний алгоритм',
+    },
+    {
+      label: 'Полный ИИ-отчёт',
+      provider: 'ИИ',
+      available: !!(caseData as unknown as Record<string, unknown>).fullReport ||
+        caseData.verificationLog?.some((ev) => ev.action === 'full_report:saved'),
+      detail: undefined,
+      endpoint: 'OpenAI / Шаблон',
+    },
+  ]
+  return items
+}
+
+function VerificationLogTab({ caseData }: { caseData: Case }) {
+  const events: VerificationLogEvent[] = caseData.verificationLog ?? []
+  const [providerFilter, setProviderFilter] = useState<string>('all')
+
+  const coverage = buildDataCoverage(caseData)
+
+  const sorted = [...events].sort((a, b) => (b.ts || '').localeCompare(a.ts || ''))
+  const providers = Array.from(new Set(sorted.map((e) => (e.provider || '').trim()).filter(Boolean))).sort()
+  const filtered = providerFilter === 'all' ? sorted : sorted.filter((e) => e.provider === providerFilter)
+
+  const fmt = (iso: string) => {
+    try { return new Date(iso).toLocaleString('ru-RU') } catch { return iso }
+  }
+
+  const fmtTime = (iso: string) => {
+    try { return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) } catch { return iso }
+  }
+
+  return (
+    <div className="space-y-5">
+
+      {/* ── Data coverage grid ─────────────────────────────── */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Database className="w-4 h-4 text-neutral-500" />
+          <h3 className="text-sm font-semibold text-neutral-800">Что собрано по контрагенту</h3>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {coverage.map((item, i) => (
+            <div
+              key={i}
+              className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 ${
+                item.available
+                  ? 'border-neutral-200 bg-white'
+                  : 'border-dashed border-neutral-200 bg-neutral-50 opacity-60'
+              }`}
+            >
+              <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
+                item.available ? 'bg-emerald-500' : 'bg-neutral-300'
+              }`} />
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p className="text-xs font-medium text-neutral-800 leading-tight">{item.label}</p>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-500 border border-neutral-200 shrink-0">
+                    {item.provider}
+                  </span>
+                </div>
+                {item.detail && (
+                  <p className="text-[11px] text-neutral-500 mt-0.5">{item.detail}</p>
+                )}
+                <p className="text-[10px] text-neutral-400 mt-0.5 font-mono truncate">{item.endpoint}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Event timeline ─────────────────────────────────── */}
+      <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden">
+        {/* Timeline header */}
+        <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-neutral-100">
+          <div className="flex items-center gap-2">
+            <ListChecks className="w-4 h-4 text-neutral-500" />
+            <h3 className="text-sm font-semibold text-neutral-800">Хронология событий</h3>
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-500 border border-neutral-200">
+              {events.length}
+            </span>
+          </div>
+          {providers.length > 1 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-neutral-400">Провайдер:</span>
+              <select
+                value={providerFilter}
+                onChange={(e) => setProviderFilter(e.target.value)}
+                className="text-xs border border-neutral-200 rounded-lg px-2 py-1.5 bg-white text-neutral-700"
+              >
+                <option value="all">Все</option>
+                {providers.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
+
+        {events.length === 0 ? (
+          <div className="p-8 text-center">
+            <p className="text-sm text-neutral-400">Событий пока нет. Запустите проверку или обновите кейс.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-neutral-50">
+            {filtered.map((e, idx) => {
+              const meta = ACTION_META[e.action]
+              const ok = e.outcome?.status !== 'error'
+              const cached = e.outcome?.cached === true
+              const outMeta = e.outcome?.meta ?? {}
+              const mode = outMeta.mode as string | undefined
+              const availableBlocks = Array.isArray(outMeta.availableBlocks)
+                ? (outMeta.availableBlocks as string[])
+                : null
+              const isAiSection = e.action.startsWith('full_report:section:')
+              const group = meta?.group ?? 'system'
+              const cfg = GROUP_CONFIG[group]
+              const subjectLabel = [e.subject?.name, e.subject?.value].filter(Boolean).join(' · ')
+              const modeInfo = mode ? (MODE_LABELS[mode] ?? { label: mode, cls: 'bg-neutral-100 text-neutral-600 border-neutral-200' }) : null
+
+              return (
+                <div key={`${e.ts}-${idx}`} className="flex gap-0">
+                  {/* Left colored indicator */}
+                  <div className={`w-1 shrink-0 ${cfg.dotCls}`} />
+
+                  <div className="flex-1 px-4 py-3">
+                    {/* Row 1: time + badges */}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] font-mono text-neutral-400 min-w-[68px]">{fmtTime(e.ts)}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border font-semibold uppercase tracking-wide ${cfg.headerCls}`}>
+                        {e.provider}
+                      </span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                        ok ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'
+                      }`}>
+                        {ok ? '✓ OK' : '✗ Ошибка'}
+                      </span>
+                      {cached && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-50 text-sky-600 border border-sky-200">кэш</span>
+                      )}
+                      {modeInfo && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${modeInfo.cls}`}>{modeInfo.label}</span>
+                      )}
+                    </div>
+
+                    {/* Row 2: action + subject */}
+                    <div className="flex items-baseline gap-1.5 mt-1">
+                      <span className="text-base leading-none">{meta?.icon ?? '•'}</span>
+                      <p className="text-[13px] font-medium text-neutral-900">
+                        {meta?.label ?? e.action}
+                        {subjectLabel && (
+                          <span className="font-normal text-neutral-500 text-xs ml-1">— {subjectLabel}</span>
+                        )}
+                      </p>
+                    </div>
+
+                    {/* Row 3: endpoint */}
+                    {e.request?.endpoint && (
+                      <p className="text-[11px] text-neutral-400 mt-0.5 font-mono">
+                        → {e.request.endpoint}
+                        {e.request.params && Object.keys(e.request.params).length > 0 && (
+                          <span className="ml-1 text-neutral-300">
+                            ({Object.entries(e.request.params).map(([k, v]) => `${k}=${v}`).join(', ')})
+                          </span>
+                        )}
+                      </p>
+                    )}
+
+                    {/* Row 4: counts as chips */}
+                    {e.outcome?.counts && Object.keys(e.outcome.counts).length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {Object.entries(e.outcome.counts).slice(0, 8).map(([k, v]) => (
+                          <span key={k} className="text-[11px] px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-600 border border-neutral-200">
+                            {k}: <strong>{String(v)}</strong>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Row 5: AI context blocks */}
+                    {isAiSection && availableBlocks && availableBlocks.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-[10px] uppercase tracking-wide text-neutral-400 mb-1">Данные в контексте ИИ:</p>
+                        <div className="flex flex-wrap gap-1">
+                          {availableBlocks.map((block, bi) => (
+                            <span key={bi} className="text-[11px] px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+                              {block}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Row 6: error */}
+                    {e.outcome?.message && (
+                      <p className="text-[11px] text-red-600 mt-1.5 bg-red-50 rounded px-2 py-1 border border-red-100">
+                        {e.outcome.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function CaseDetail({ caseId }: { caseId: string }) {
   const searchParams = useSearchParams()
   const { getCase, refreshCase, apiConnected } = useCases()
@@ -1391,6 +1888,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
     { id: 'data', label: 'Граф связей', icon: Network },
     { id: 'scoring', label: 'Скоринг', icon: TrendingUp },
     { id: 'lseg', label: 'LSEG / Санкции', icon: ShieldCheck },
+    { id: 'log', label: 'Лог проверки', icon: ListChecks },
     { id: 'documents', label: 'Документы', icon: FileText },
     { id: 'assessment', label: 'Заключение ИИ', icon: AlertTriangle },
     { id: 'chat', label: 'Чат с ИИ', icon: MessageSquare },
@@ -1521,6 +2019,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
       )}
       {activeTab === 'scoring' && <ScoringTab caseData={caseData} />}
       {activeTab === 'lseg' && <LsegTab caseData={caseData} focusEntity={focusEntity} />}
+      {activeTab === 'log' && <VerificationLogTab caseData={caseData} />}
       {activeTab === 'documents' && <DocumentsTab caseData={caseData} />}
       {activeTab === 'assessment' && <AssessmentTab caseData={caseData} />}
       {activeTab === 'chat' && <ChatTab caseData={caseData} />}

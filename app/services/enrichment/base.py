@@ -14,6 +14,7 @@ class CompanyData(BaseModel):
     court_cases: Optional[int] = None
     in_sanctions_list: Optional[bool] = None
     director: Optional[str] = None
+    director_iin: Optional[str] = None
     address: Optional[str] = None
     registration_date: Optional[str] = None
     employees: Optional[int] = None

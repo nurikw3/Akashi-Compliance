@@ -521,7 +521,7 @@ async def rescreen_case_lseg_endpoint(case_id: str, force: bool = True) -> dict[
 
 
 @router.post("/cases/{case_id}/full-report")
-async def generate_case_full_report(case_id: str) -> dict[str, Any]:
+async def generate_case_full_report(case_id: str, force: bool = False) -> dict[str, Any]:
     """Запустить генерацию полного AI-отчёта в фоне."""
     import asyncio as _asyncio
 
@@ -532,11 +532,20 @@ async def generate_case_full_report(case_id: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=400, detail="Кейс должен быть в статусе ready"
         )
+    if force:
+        enriched = row.get("enriched_data") or {}
+        # Force mode invalidates stale persisted report so frontend won't
+        # treat old content as a freshly regenerated one during polling.
+        enriched.pop("fullReport", None)
+        enriched.pop("fullReportGeneratedAt", None)
+        db.update_case(case_id, enriched_data=enriched)
+
     _asyncio.create_task(generate_full_report(case_id))
     return {
         "status": "queued",
         "message": "Генерация полного отчёта запущена в фоне",
         "caseId": case_id,
+        "force": force,
     }
 
 

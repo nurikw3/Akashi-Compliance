@@ -108,4 +108,7 @@ def case_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "totalScore": enriched.get("totalScore"),
         "directorProfile": enriched.get("directorProfile"),
         "affiliateProfiles": enriched.get("affiliateProfiles"),
+        "individualCourts": enriched.get("individualCourts"),
+        "individualCourtsMeta": enriched.get("individualCourtsMeta"),
+        "verificationLog": enriched.get("verificationLog") or [],
     }

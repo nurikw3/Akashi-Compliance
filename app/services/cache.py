@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 LSEG_TTL = 86400   # 24 h
 ADATA_TTL = 43200  # 12 h
+DIRECTOR_IIN_TTL = 86400  # 24 h
 
 _client: aioredis.Redis | None = None  # process-level singleton
 
@@ -44,7 +45,7 @@ def adata_key(endpoint: str, iin: str) -> str:
     """``adata:v1:{endpoint}:{iin}``
 
     *endpoint* is one of: ``info``, ``trustworthy``, ``beneficiary``, ``nonresident``,
-    ``relation``.
+    ``relation``, ``director_iin``, ``individual_courts``.
     """
     return f"adata:v1:{endpoint}:{iin}"
 

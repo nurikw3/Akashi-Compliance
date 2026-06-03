@@ -380,6 +380,30 @@ def _has_critical_risk(risk_flags: list[str], status_flags: list[str]) -> bool:
     return any(word in combined for word in critical_keywords)
 
 
+def _resolve_director_iin(info_data: dict[str, Any]) -> str | None:
+    basic = info_data.get("basic") if isinstance(info_data.get("basic"), dict) else {}
+    for key in (
+        "head_biin",
+        "director_iin",
+        "head_iin",
+        "head_biin_formatted",
+        "head_bin_formatted",
+    ):
+        digits = "".join(ch for ch in str(basic.get(key) or "") if ch.isdigit())
+        if len(digits) == 12:
+            return digits
+
+    diagram = info_data.get("connectedDiagram")
+    if isinstance(diagram, dict):
+        by_head = diagram.get("affiliation_by_head")
+        if isinstance(by_head, dict):
+            for key in ("head_biin", "director_iin", "head_iin", "head_biin_formatted"):
+                digits = "".join(ch for ch in str(by_head.get(key) or "") if ch.isdigit())
+                if len(digits) == 12:
+                    return digits
+    return None
+
+
 def _resolve_director_name(info_data: dict[str, Any]) -> str | None:
     """Prefer ``basic.fullname_director``; never treat risk ``head`` blob as a name."""
     basic = info_data.get("basic") if isinstance(info_data.get("basic"), dict) else {}
@@ -443,6 +467,7 @@ def map_info_data(
         or None
     )
     director = _resolve_director_name(info_data)
+    director_iin = _resolve_director_iin(info_data)
     address = basic.get("legal_address") or basic.get("legal_address_kz")
     registration_date = basic.get("date_registration") or basic.get("last_date_registration")
     employees = basic.get("employee_count")
@@ -525,6 +550,7 @@ def map_info_data(
         "court_totals": court_totals,
         "in_sanctions_list": in_sanctions,
         "director": director,
+        "director_iin": director_iin,
         "address": str(address) if address else None,
         "registration_date": str(registration_date) if registration_date else None,
         "employees": int(employees) if employees is not None else None,

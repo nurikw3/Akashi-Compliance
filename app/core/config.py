@@ -24,6 +24,21 @@ def normalize_adata_base_url(url: str) -> str:
     return normalized
 
 
+def normalize_adata_individual_base_url(company_base_url: str) -> str:
+    """Derive Adata *individual* API base from the company base URL."""
+    normalized = (company_base_url or "").strip().rstrip("/")
+    if not normalized:
+        return "https://api.adata.kz/api/individual"
+    if normalized.endswith("/company"):
+        return f"{normalized[: -len('/company')]}/individual"
+    if normalized.endswith("/individual"):
+        return normalized
+    if "/api/individual" in normalized:
+        idx = normalized.index("/api/individual")
+        return normalized[: idx + len("/api/individual")]
+    return "https://api.adata.kz/api/individual"
+
+
 @dataclass
 class Settings:
     adata_token: str = os.getenv("ADATA_TOKEN", "")

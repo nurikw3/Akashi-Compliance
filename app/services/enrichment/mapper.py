@@ -233,6 +233,8 @@ def company_data_to_enrichment(
             enrichment["companyInfo"]["fullName"] = data.name
         if data.director:
             enrichment["companyInfo"]["director"] = data.director
+        if data.director_iin:
+            enrichment["companyInfo"]["director_iin"] = data.director_iin
         if data.address:
             enrichment["companyInfo"]["address"] = data.address
         if data.registration_date:

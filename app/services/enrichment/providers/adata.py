@@ -6,7 +6,7 @@ from typing import Any
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-from app.services.adata.client import deep_find, info_has, run_parallel_checks
+from app.services.adata.client import deep_find, fetch_director_iin, info_has, run_parallel_checks
 from app.services.adata.info_mapper import info_has_structured_blocks, map_info_data
 from app.services.adata.client import _SANCTION_KEYS
 from app.services.enrichment.base import BaseProvider, CompanyData
@@ -237,6 +237,44 @@ class AdataProvider(BaseProvider):
             "conclusion": "none",
         }
 
+    def _extract_director_iin(
+        self, basic_data: dict[str, Any], info_data: dict[str, Any]
+    ) -> str | None:
+        blocks: list[dict[str, Any]] = []
+        if basic_data:
+            blocks.append(basic_data)
+        basic_block = info_data.get("basic")
+        if isinstance(basic_block, dict):
+            blocks.append(basic_block)
+        for block in blocks:
+            for key in (
+                "head_biin",
+                "director_iin",
+                "head_iin",
+                "head_biin_formatted",
+                "head_bin_formatted",
+            ):
+                raw = block.get(key)
+                if raw is None:
+                    continue
+                digits = "".join(ch for ch in str(raw) if ch.isdigit())
+                if len(digits) == 12:
+                    return digits
+        found = self._deep_get(
+            info_data,
+            {
+                "head_biin",
+                "director_iin",
+                "head_iin",
+                "head_biin_formatted",
+            },
+        )
+        if found is not None:
+            digits = "".join(ch for ch in str(found) if ch.isdigit())
+            if len(digits) == 12:
+                return digits
+        return None
+
     def _map_raw(self, iin: str, raw: dict[str, Any], company_name: str) -> CompanyData:
         info_data = self._info_data(raw)
 
@@ -246,6 +284,8 @@ class AdataProvider(BaseProvider):
             )
             company = CompanyData(**{k: mapped[k] for k in CompanyData.model_fields if k in mapped})
             company.section_sources = mapped["section_sources"]
+            if mapped.get("director_iin"):
+                company.director_iin = mapped["director_iin"]
             # Merge trustworthy-extended sanctions if present in fallbacks
             sanctions_data = self._section_payload(raw, "sanctions", info_data=info_data)
             if sanctions_data and self._deep_get(
@@ -413,6 +453,8 @@ class AdataProvider(BaseProvider):
         )
         raw["_section_sources"] = section_sources
 
+        director_iin = self._extract_director_iin(basic_data, info_data)
+
         company = CompanyData(
             iin=iin,
             name=str(name) if name else (company_name or None),
@@ -423,6 +465,7 @@ class AdataProvider(BaseProvider):
             court_totals=court_totals,
             in_sanctions_list=in_sanctions,
             director=director,
+            director_iin=director_iin,
             address=str(address) if address else None,
             registration_date=str(registration_date) if registration_date else None,
             employees=employees,
@@ -435,11 +478,11 @@ class AdataProvider(BaseProvider):
         company.section_sources["courts"] = courts_source
         return company
 
-    async def check(self, iin: str) -> CompanyData | None:
+    async def check(self, iin: str, *, case_id: str | None = None) -> CompanyData | None:
         if not self.is_available():
             return None
         try:
-            raw = await run_parallel_checks(iin)
+            raw = await run_parallel_checks(iin, case_id=case_id)
             info_ok = isinstance(raw.get("info"), dict) and raw["info"].get("data") is not None
             any_data = info_ok or any(
                 isinstance(section, dict) and section.get("data") is not None
@@ -454,7 +497,10 @@ class AdataProvider(BaseProvider):
                     f": {info_err}" if info_err else "",
                 )
                 return None
-            return self._map_raw(iin, raw, "")
+            company = self._map_raw(iin, raw, "")
+            if not company.director_iin:
+                company.director_iin = await fetch_director_iin(iin, case_id=case_id)
+            return company
         except Exception as exc:
             logger.info("Adata enrichment failed for BIN %s: %s", iin, exc)
             if settings.suppress_enrichment_errors:

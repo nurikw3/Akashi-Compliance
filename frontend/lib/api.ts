@@ -303,9 +303,11 @@ export async function fetchFullReport(
 }
 
 export async function generateFullReport(
-  caseId: string
-): Promise<{ status: string; message: string; caseId: string }> {
-  return request(`/api/cases/${caseId}/full-report`, { method: 'POST' })
+  caseId: string,
+  force = true
+): Promise<{ status: string; message: string; caseId: string; force?: boolean }> {
+  const q = force ? '?force=true' : ''
+  return request(`/api/cases/${caseId}/full-report${q}`, { method: 'POST' })
 }
 
 export async function fetchCaseScore(caseId: string): Promise<{

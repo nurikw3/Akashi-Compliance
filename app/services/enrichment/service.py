@@ -19,13 +19,15 @@ class EnrichmentService:
         self.last_sources: list[str] = []
         self.last_section_sources: dict[str, str] = default_section_sources()
 
-    async def enrich(self, iin: str) -> tuple[CompanyData, list[str], dict[str, str]]:
+    async def enrich(
+        self, iin: str, *, case_id: str | None = None
+    ) -> tuple[CompanyData, list[str], dict[str, str]]:
         real_providers = self.registry.available()
         results: list[tuple[str, CompanyData]] = []
 
         if real_providers:
             checks = await asyncio.gather(
-                *[self._safe_check(provider, iin) for provider in real_providers],
+                *[self._safe_check(provider, iin, case_id=case_id) for provider in real_providers],
                 return_exceptions=True,
             )
             for provider, result in zip(real_providers, checks):
@@ -55,9 +57,15 @@ class EnrichmentService:
         merged.section_sources = self.last_section_sources
         return merged, sources, self.last_section_sources
 
-    async def _safe_check(self, provider: BaseProvider, iin: str) -> CompanyData | None:
+    async def _safe_check(
+        self, provider: BaseProvider, iin: str, *, case_id: str | None
+    ) -> CompanyData | None:
         try:
-            result = await provider.check(iin)
+            # Optional case-aware provider interface (best-effort, backward compatible).
+            if case_id and "case_id" in getattr(provider.check, "__code__", object()).co_varnames:
+                result = await provider.check(iin, case_id=case_id)  # type: ignore[call-arg]
+            else:
+                result = await provider.check(iin)
             if result is None:
                 logger.info(
                     "Provider %s returned no data for BIN %s",

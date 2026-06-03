@@ -116,6 +116,54 @@ export interface AffiliateTree {
   root: AffiliateTreeNode | null
 }
 
+export interface IndividualCourtCase {
+  number: string
+  result: string
+  type: string
+  date: string
+  court: string
+  category: string
+  judge: string
+  status?: string
+  role?: string
+  defendants: string[]
+  plaintiffs: string[]
+  documents?: Array<{ file_name?: string | null; doc_link?: string | null }>
+  history: Array<{
+    event_date: string
+    name: string
+    documents?: Array<{ file_name: string; doc_link: string }>
+  }>
+}
+
+export interface IndividualCourtsMeta {
+  name: string
+  role?: string
+  companyName?: string
+}
+
+export interface VerificationLogEvent {
+  ts: string
+  provider: string
+  action: string
+  subject?: {
+    type?: string
+    value?: string
+    name?: string
+  }
+  request?: {
+    endpoint?: string
+    params?: Record<string, unknown>
+  }
+  outcome?: {
+    status?: 'ok' | 'error'
+    cached?: boolean
+    counts?: Record<string, number | boolean>
+    message?: string
+    meta?: Record<string, unknown>
+  }
+}
+
 export interface Case {
   id: string
   name: string
@@ -139,6 +187,9 @@ export interface Case {
   totalScore?: number | null
   affiliateProfiles?: Record<string, { courts?: EnrichmentData['courts'] }>
   beneficiary?: Record<string, unknown>[]
+  individualCourts?: Record<string, IndividualCourtCase[]>
+  individualCourtsMeta?: Record<string, IndividualCourtsMeta>
+  verificationLog?: VerificationLogEvent[]
 }
 
 export interface EnrichmentData {
@@ -147,6 +198,7 @@ export interface EnrichmentData {
     registrationDate: string
     address: string
     director: string
+    director_iin?: string
     employees: number
     industry: string
     legalForm?: string | null
