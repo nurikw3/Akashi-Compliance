@@ -308,15 +308,17 @@ def _parse_affiliates(
     for founder_block in diagram.get("affiliation_by_founder") or []:
         if not isinstance(founder_block, dict):
             continue
+        founder_bin = str(
+            founder_block.get("founder_biin_formatted")
+            or founder_block.get("founder_biin")
+            or ""
+        )
         founders.append(
             {
                 "name": founder_block.get("founder_name", "—"),
-                "iin": str(
-                    founder_block.get("founder_biin_formatted")
-                    or founder_block.get("founder_biin")
-                    or ""
-                ),
+                "iin": founder_bin,
                 "role": "Учредитель",
+                "is_company": len("".join(c for c in founder_bin if c.isdigit())) == 12,
             }
         )
         for item in founder_block.get("companies") or []:
@@ -345,6 +347,7 @@ def _founders_from_block(founders_block: dict[str, Any]) -> list[dict[str, Any]]
                 "name": item.get("name", "—"),
                 "iin": uin,
                 "role": role,
+                "is_company": bool(item.get("is_company")),
             }
         )
     return individuals

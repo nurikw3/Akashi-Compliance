@@ -612,9 +612,10 @@ interface NodePopupProps {
 }
 
 function NodePopup({ node, position, onClose, onViewFull, onCheckLseg }: NodePopupProps) {
+  const hasBin = isCompanyBin(node.iinBin)
   const canLookup =
-    (node.type === 'company' || node.type === 'main') && isCompanyBin(node.iinBin)
-  const isForeign = isForeignEntity(node)
+    (node.type === 'company' || node.type === 'main' || hasBin) && hasBin
+  const isForeign = node.type === 'company' && !hasBin
   const buttonEnabled = isForeign || canLookup
   const handlePrimaryAction = isForeign ? onCheckLseg : onViewFull
   const primaryLabel = isForeign

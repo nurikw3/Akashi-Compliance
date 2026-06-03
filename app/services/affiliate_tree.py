@@ -214,14 +214,15 @@ def _level1_from_enrichment(
             continue
         if iin:
             visited.add(iin)
+        is_company_founder = bool(person.get("is_company"))
         children.append(
             _make_node(
-                node_id=f"l1-pe-{key}",
+                node_id=f"l1-{'co' if is_company_founder else 'pe'}-{key}",
                 name=name,
                 level=1,
-                node_type="person",
+                node_type="company" if is_company_founder else "person",
                 iin_bin=iin,
-                role=person.get("role") or "Физ. лицо",
+                role=person.get("role") or ("Учредитель (юрлицо)" if is_company_founder else "Физ. лицо"),
             )
         )
 
@@ -270,14 +271,15 @@ def _affiliates_from_company_data(
             continue
         if iin:
             visited.add(iin)
+        is_company_founder = bool(person.get("is_company"))
         children.append(
             _make_node(
-                node_id=f"l{level}-pe-{node_key}",
+                node_id=f"l{level}-{'co' if is_company_founder else 'pe'}-{node_key}",
                 name=name,
                 level=level,
-                node_type="person",
+                node_type="company" if is_company_founder else "person",
                 iin_bin=iin,
-                role=person.get("role") or "Учредитель",
+                role=person.get("role") or ("Учредитель (юрлицо)" if is_company_founder else "Учредитель"),
             )
         )
 
