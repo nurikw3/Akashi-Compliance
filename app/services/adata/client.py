@@ -19,8 +19,9 @@ from typing import Any
 
 import httpx
 
-from app.core.config import settings
-from app.services.cache import ADATA_TTL, adata_key, get_cached, set_cached
+from app.core.config import normalize_adata_individual_base_url, settings
+from app.services.cache import ADATA_TTL, DIRECTOR_IIN_TTL, adata_key, get_cached, set_cached
+from app.services.verification_log import append_case_event
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ async def _get_endpoint(
     return await _poll(client, payload["token"])
 
 
-async def fetch_company_info(bin_value: str) -> dict[str, Any]:
+async def fetch_company_info(bin_value: str, *, case_id: str | None = None) -> dict[str, Any]:
     """Start company info job and poll until ``data`` is ready; return that object."""
     if not settings.adata_token:
         raise AdataError("ADATA_TOKEN is not configured")
@@ -167,6 +168,15 @@ async def fetch_company_info(bin_value: str) -> dict[str, Any]:
     cache_key = adata_key("info", bin_value)
     cached = await get_cached(cache_key)
     if cached is not None:
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="company_info (cached)",
+                subject={"type": "BIN", "value": bin_value},
+                request={"endpoint": "/company/info", "params": {"iinBin": bin_value}},
+                outcome={"status": "ok", "cached": True},
+            )
         return cached
 
     timeout = settings.adata_timeout_seconds
@@ -176,6 +186,15 @@ async def fetch_company_info(bin_value: str) -> dict[str, Any]:
         payload = response.json()
         if "token" not in payload:
             if isinstance(payload.get("data"), dict):
+                if case_id:
+                    append_case_event(
+                        case_id,
+                        provider="Adata",
+                        action="company_info",
+                        subject={"type": "BIN", "value": bin_value},
+                        request={"endpoint": "/company/info", "params": {"iinBin": bin_value}},
+                        outcome={"status": "ok", "cached": False, "meta": {"poll": False}},
+                    )
                 return payload["data"]
             raise AdataError("Company info start did not return a job token or data")
 
@@ -186,6 +205,15 @@ async def fetch_company_info(bin_value: str) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise AdataError("Company info poll returned no data")
         await set_cached(cache_key, data, ADATA_TTL)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="company_info",
+                subject={"type": "BIN", "value": bin_value},
+                request={"endpoint": "/company/info → /company/info/check", "params": {"iinBin": bin_value}},
+                outcome={"status": "ok", "cached": False, "meta": {"poll": True}},
+            )
         return data
 
 
@@ -292,7 +320,7 @@ async def _fetch_fallback(
     raise AdataError(f"Unknown fallback endpoint: {suffix}")
 
 
-async def run_parallel_checks(bin_value: str) -> dict[str, Any]:
+async def run_parallel_checks(bin_value: str, *, case_id: str | None = None) -> dict[str, Any]:
     """Fetch company info first, then optional fallback endpoints for missing fields."""
     if not settings.adata_token:
         raise AdataError("ADATA_TOKEN is not configured")
@@ -301,7 +329,7 @@ async def run_parallel_checks(bin_value: str) -> dict[str, Any]:
     info_data: dict[str, Any] = {}
 
     try:
-        info_data = await fetch_company_info(bin_value)
+        info_data = await fetch_company_info(bin_value, case_id=case_id)
         result["info"] = {"success": True, "data": info_data}
     except Exception as exc:
         logger.info(
@@ -309,9 +337,27 @@ async def run_parallel_checks(bin_value: str) -> dict[str, Any]:
             bin_value,
             exc,
         )
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="company_info",
+                subject={"type": "BIN", "value": bin_value},
+                request={"endpoint": "/company/info", "params": {"iinBin": bin_value}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
         result["info"] = {"error": str(exc)}
 
     fallbacks = _fallbacks_for_info(info_data) if info_data else list(_RAW_KEYS.keys())
+    if case_id:
+        append_case_event(
+            case_id,
+            provider="Adata",
+            action="fallbacks_selected",
+            subject={"type": "BIN", "value": bin_value},
+            request={"endpoint": "fallbacks_for_info"},
+            outcome={"status": "ok", "counts": {"fallbacks": len(fallbacks)}, "meta": {"endpoints": fallbacks}},
+        )
 
     timeout = settings.adata_timeout_seconds
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -334,8 +380,26 @@ async def run_parallel_checks(bin_value: str) -> dict[str, Any]:
                 raw_key = _RAW_KEYS[suffix]
                 if isinstance(value, Exception):
                     result[raw_key] = {"error": str(value), "source": raw_key}
+                    if case_id:
+                        append_case_event(
+                            case_id,
+                            provider="Adata",
+                            action=f"fallback:{suffix}",
+                            subject={"type": "BIN", "value": bin_value},
+                            request={"endpoint": f"/company/{suffix}", "params": {"iinBin": bin_value}},
+                            outcome={"status": "error", "cached": False, "message": str(value)[:200]},
+                        )
                 else:
                     result[raw_key] = value
+                    if case_id:
+                        append_case_event(
+                            case_id,
+                            provider="Adata",
+                            action=f"fallback:{suffix}",
+                            subject={"type": "BIN", "value": bin_value},
+                            request={"endpoint": f"/company/{suffix}", "params": {"iinBin": bin_value}},
+                            outcome={"status": "ok", "cached": False},
+                        )
 
     return result
 
@@ -414,16 +478,316 @@ async def _poll_with_url(
     return {"error": "timeout"}
 
 
+def _normalize_iin_digits(value: Any) -> str | None:
+    if value is None:
+        return None
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if len(digits) == 12:
+        return digits
+    return None
+
+
+_DIRECTOR_IIN_KEYS = frozenset(
+    {"head_biin", "director_iin", "head_iin", "head_biin_formatted", "head_bin_formatted"}
+)
+
+
+def _extract_director_iin_from_basic_payload(payload: dict[str, Any]) -> str | None:
+    """Extract 12-digit director IIN from basic endpoint or nested basic blocks."""
+    blocks: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        blocks.append(payload)
+        data = payload.get("data")
+        if isinstance(data, dict):
+            blocks.append(data)
+            nested_basic = data.get("basic")
+            if isinstance(nested_basic, dict):
+                blocks.append(nested_basic)
+        basic = payload.get("basic")
+        if isinstance(basic, dict):
+            blocks.append(basic)
+
+    for block in blocks:
+        for key in _DIRECTOR_IIN_KEYS:
+            iin = _normalize_iin_digits(block.get(key))
+            if iin:
+                return iin
+
+    found = deep_find(payload, _DIRECTOR_IIN_KEYS)
+    return _normalize_iin_digits(found)
+
+
+def _individual_api_base() -> str:
+    return normalize_adata_individual_base_url(settings.adata_base_url)
+
+
+def _individual_token_path(suffix: str) -> str:
+    base = _individual_api_base().rstrip("/")
+    return f"{base}/{suffix}/{settings.adata_token}"
+
+
+def _individual_info_check_url() -> str:
+    return _individual_token_path("info/check")
+
+
+def _normalize_court_documents(docs_raw: Any) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    if not isinstance(docs_raw, list):
+        return documents
+    for doc in docs_raw:
+        if not isinstance(doc, dict):
+            continue
+        file_name = doc.get("file_name") or doc.get("fileName")
+        doc_link = doc.get("doc_link") or doc.get("docLink")
+        if file_name or doc_link:
+            documents.append(
+                {
+                    "file_name": str(file_name) if file_name else None,
+                    "doc_link": str(doc_link) if doc_link else None,
+                }
+            )
+    return documents
+
+
+def _normalize_individual_court_case(raw: dict[str, Any]) -> dict[str, Any]:
+    history: list[dict[str, Any]] = []
+    for event in raw.get("history") or []:
+        if not isinstance(event, dict):
+            continue
+        history.append(
+            {
+                "event_date": event.get("event_date") or event.get("eventDate"),
+                "name": event.get("name"),
+                "documents": _normalize_court_documents(event.get("documents")),
+            }
+        )
+
+    case_documents = _normalize_court_documents(raw.get("documents"))
+    defendants = list(raw.get("defendants") or [])
+    plaintiffs = list(raw.get("plaintiffs") or [])
+    sides = raw.get("sides")
+    if isinstance(sides, list) and sides and not defendants and not plaintiffs:
+        defendants = [str(s) for s in sides if s]
+
+    return {
+        "number": raw.get("number"),
+        "result": raw.get("result") or raw.get("court_case_result"),
+        "type": raw.get("type"),
+        "date": raw.get("date"),
+        "court": raw.get("court"),
+        "category": raw.get("category"),
+        "judge": raw.get("judge"),
+        "status": raw.get("status"),
+        "role": raw.get("role"),
+        "defendants": defendants,
+        "plaintiffs": plaintiffs,
+        "documents": case_documents,
+        "history": history,
+    }
+
+
+async def fetch_director_iin(bin_value: str, *, case_id: str | None = None) -> str | None:
+    """Return director IIN from ``/company/basic/``, cached 24h."""
+    cache_key = adata_key("director_iin", bin_value)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="director_iin (cached)",
+                subject={"type": "BIN", "value": bin_value},
+                request={"endpoint": "/company/basic", "params": {"iinBin": bin_value}},
+                outcome={"status": "ok", "cached": True},
+            )
+        return _normalize_iin_digits(cached.get("director_iin"))
+
+    if not settings.adata_token:
+        return None
+
+    try:
+        timeout = settings.adata_timeout_seconds
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            basic_payload = await get_basic(client, bin_value)
+        director_iin = _extract_director_iin_from_basic_payload(basic_payload)
+        if director_iin:
+            await set_cached(cache_key, {"director_iin": director_iin}, DIRECTOR_IIN_TTL)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="director_iin",
+                subject={"type": "BIN", "value": bin_value},
+                request={"endpoint": "/company/basic", "params": {"iinBin": bin_value}},
+                outcome={"status": "ok", "cached": False, "counts": {"directorIinFound": bool(director_iin)}},
+            )
+        return director_iin
+    except Exception as exc:
+        logger.warning("fetch_director_iin failed for BIN %s: %s", bin_value, exc)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="director_iin",
+                subject={"type": "BIN", "value": bin_value},
+                request={"endpoint": "/company/basic", "params": {"iinBin": bin_value}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
+        return None
+
+
+async def _poll_individual_court_cases(
+    client: httpx.AsyncClient,
+    job_token: str,
+    check_url: str,
+) -> list[dict[str, Any]]:
+    """Poll individual/info/check until ``court_cases`` is present; merge all pages."""
+    attempts = settings.adata_poll_attempts
+    delay = settings.adata_poll_delay_seconds
+    ready_data: dict[str, Any] | None = None
+    for _ in range(attempts):
+        await asyncio.sleep(delay)
+        check = await client.get(check_url, params={"token": job_token, "page": 1})
+        check.raise_for_status()
+        result = check.json()
+        data = result.get("data")
+        if isinstance(data, dict) and "court_cases" in data:
+            ready_data = data
+            break
+
+    if ready_data is None:
+        return []
+
+    raw_cases: list[Any] = list(ready_data.get("court_cases") or [])
+    total_pages = ready_data.get("total_pages") or ready_data.get("totalPages")
+    try:
+        pages_total = int(total_pages) if total_pages is not None else 1
+    except (TypeError, ValueError):
+        pages_total = 1
+
+    for page in range(2, max(pages_total, 1) + 1):
+        check = await client.get(check_url, params={"token": job_token, "page": page})
+        check.raise_for_status()
+        page_data = check.json().get("data")
+        if isinstance(page_data, dict):
+            raw_cases.extend(page_data.get("court_cases") or [])
+
+    return [
+        _normalize_individual_court_case(row) for row in raw_cases if isinstance(row, dict)
+    ]
+
+
+async def fetch_individual_court_cases(
+    iin: str, *, case_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Return individual court cases with document links, cached 12h."""
+    cache_key = adata_key("individual_courts", iin)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        if case_id:
+            cases_cached = cached.get("cases")
+            count = len(cases_cached) if isinstance(cases_cached, list) else 0
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="individual_courts (cached)",
+                subject={"type": "IIN", "value": iin},
+                request={"endpoint": "/individual/court-case/details", "params": {"iinBin": iin}},
+                outcome={"status": "ok", "cached": True, "counts": {"cases": count}},
+            )
+        cases = cached.get("cases")
+        return cases if isinstance(cases, list) else []
+
+    if not settings.adata_token:
+        return []
+
+    try:
+        timeout = settings.adata_timeout_seconds
+        check_url = _individual_info_check_url()
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = _individual_token_path("court-case/details")
+            response = await client.get(url, params={"iinBin": iin})
+            response.raise_for_status()
+            payload = response.json()
+            if not payload.get("success", True) and "token" not in payload:
+                logger.warning(
+                    "individual court-case init failed for IIN %s: %s",
+                    iin,
+                    payload.get("message") or payload,
+                )
+                if case_id:
+                    append_case_event(
+                        case_id,
+                        provider="Adata",
+                        action="individual_courts",
+                        subject={"type": "IIN", "value": iin},
+                        request={"endpoint": "/individual/court-case/details", "params": {"iinBin": iin}},
+                        outcome={
+                            "status": "error",
+                            "cached": False,
+                            "message": str(payload.get("message") or "init_failed")[:200],
+                        },
+                    )
+                return []
+            job_token = payload.get("token")
+            if not job_token:
+                return []
+
+            cases = await _poll_individual_court_cases(client, job_token, check_url)
+            await set_cached(cache_key, {"cases": cases}, ADATA_TTL)
+            if case_id:
+                docs = 0
+                for c in cases:
+                    if isinstance(c, dict):
+                        docs += len(c.get("documents") or [])
+                        for h in c.get("history") or []:
+                            if isinstance(h, dict):
+                                docs += len(h.get("documents") or [])
+                append_case_event(
+                    case_id,
+                    provider="Adata",
+                    action="individual_courts",
+                    subject={"type": "IIN", "value": iin},
+                    request={
+                        "endpoint": "/individual/court-case/details → /individual/info/check",
+                        "params": {"iinBin": iin},
+                    },
+                    outcome={"status": "ok", "cached": False, "counts": {"cases": len(cases), "docs": docs}},
+                )
+            return cases
+    except Exception as exc:
+        logger.warning("fetch_individual_court_cases failed for IIN %s: %s", iin, exc)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="individual_courts",
+                subject={"type": "IIN", "value": iin},
+                request={"endpoint": "/individual/court-case/details", "params": {"iinBin": iin}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
+        return []
+
+
 # ---------------------------------------------------------------------------
 # New public endpoints (trustworthy-plus, beneficiary, non-resident, relation)
 # ---------------------------------------------------------------------------
 
 
-async def fetch_trustworthy_plus(iin: str) -> dict[str, Any]:
+async def fetch_trustworthy_plus(iin: str, *, case_id: str | None = None) -> dict[str, Any]:
     """Return trustworthy-plus compliance data for *iin*, with 12-hour Redis cache."""
     cache_key = adata_key("trustworthy", iin)
     cached = await get_cached(cache_key)
     if cached is not None:
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="trustworthy_plus (cached)",
+                subject={"type": "BIN", "value": iin},
+                request={"endpoint": "/company/trustworthy-plus", "params": {"iinBin": iin}},
+                outcome={"status": "ok", "cached": True},
+            )
         return cached
 
     try:
@@ -442,17 +806,46 @@ async def fetch_trustworthy_plus(iin: str) -> dict[str, Any]:
             if not isinstance(data, dict):
                 return {}
             await set_cached(cache_key, data, ADATA_TTL)
+            if case_id:
+                append_case_event(
+                    case_id,
+                    provider="Adata",
+                    action="trustworthy_plus",
+                    subject={"type": "BIN", "value": iin},
+                    request={"endpoint": "/company/trustworthy-plus → /company/info/check", "params": {"iinBin": iin}},
+                    outcome={"status": "ok", "cached": False},
+                )
             return data
     except Exception as exc:
         logger.warning("fetch_trustworthy_plus failed for IIN %s: %s", iin, exc)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="trustworthy_plus",
+                subject={"type": "BIN", "value": iin},
+                request={"endpoint": "/company/trustworthy-plus", "params": {"iinBin": iin}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
         return {}
 
 
-async def fetch_beneficiary(iin: str) -> list[dict[str, Any]]:
+async def fetch_beneficiary(iin: str, *, case_id: str | None = None) -> list[dict[str, Any]]:
     """Return beneficiary list for *iin*, with 12-hour Redis cache."""
     cache_key = adata_key("beneficiary", iin)
     cached = await get_cached(cache_key)
     if cached is not None:
+        if case_id:
+            items_cached = cached.get("items")
+            count = len(items_cached) if isinstance(items_cached, list) else 0
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="beneficiary (cached)",
+                subject={"type": "BIN", "value": iin},
+                request={"endpoint": "/relation-scheme/beneficiary", "params": {"iinBin": iin}},
+                outcome={"status": "ok", "cached": True, "counts": {"items": count}},
+            )
         return cached.get("items", [])  # type: ignore[return-value]
 
     try:
@@ -471,17 +864,52 @@ async def fetch_beneficiary(iin: str) -> list[dict[str, Any]]:
             data = result.get("data")
             items: list[dict[str, Any]] = data if isinstance(data, list) else []
             await set_cached(cache_key, {"items": items}, ADATA_TTL)
+            if case_id:
+                append_case_event(
+                    case_id,
+                    provider="Adata",
+                    action="beneficiary",
+                    subject={"type": "BIN", "value": iin},
+                    request={
+                        "endpoint": "/relation-scheme/beneficiary → /relation-scheme/check",
+                        "params": {"iinBin": iin},
+                    },
+                    outcome={"status": "ok", "cached": False, "counts": {"items": len(items)}},
+                )
             return items
     except Exception as exc:
         logger.warning("fetch_beneficiary failed for IIN %s: %s", iin, exc)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="beneficiary",
+                subject={"type": "BIN", "value": iin},
+                request={"endpoint": "/relation-scheme/beneficiary", "params": {"iinBin": iin}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
         return []
 
 
-async def fetch_non_resident_affiliations(iin: str) -> dict[str, Any]:
+async def fetch_non_resident_affiliations(
+    iin: str, *, case_id: str | None = None
+) -> dict[str, Any]:
     """Return non-resident affiliation data for *iin*, with 12-hour Redis cache."""
     cache_key = adata_key("nonresident", iin)
     cached = await get_cached(cache_key)
     if cached is not None:
+        if case_id:
+            count = 0
+            if isinstance(cached, dict):
+                count = len(cached.get("data") or [])
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="non_residents (cached)",
+                subject={"type": "BIN", "value": iin},
+                request={"endpoint": "/relation-scheme/affiliation-non-resident", "params": {"iinBin": iin}},
+                outcome={"status": "ok", "cached": True, "counts": {"items": count}},
+            )
         return cached
 
     _default: dict[str, Any] = {"hasNonResidentFromAll": False, "data": []}
@@ -502,17 +930,52 @@ async def fetch_non_resident_affiliations(iin: str) -> dict[str, Any]:
             if not isinstance(data, dict):
                 return _default
             await set_cached(cache_key, data, ADATA_TTL)
+            if case_id:
+                count = len((data.get("data") or [])) if isinstance(data, dict) else 0
+                append_case_event(
+                    case_id,
+                    provider="Adata",
+                    action="non_residents",
+                    subject={"type": "BIN", "value": iin},
+                    request={
+                        "endpoint": "/relation-scheme/affiliation-non-resident → /relation-scheme/check",
+                        "params": {"iinBin": iin},
+                    },
+                    outcome={"status": "ok", "cached": False, "counts": {"items": count}},
+                )
             return data
     except Exception as exc:
         logger.warning("fetch_non_resident_affiliations failed for IIN %s: %s", iin, exc)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="non_residents",
+                subject={"type": "BIN", "value": iin},
+                request={"endpoint": "/relation-scheme/affiliation-non-resident", "params": {"iinBin": iin}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
         return _default
 
 
-async def fetch_relation_extended(iin: str) -> dict[str, Any]:
+async def fetch_relation_extended(iin: str, *, case_id: str | None = None) -> dict[str, Any]:
     """Return extended relation/affiliation data for *iin*, with 12-hour Redis cache."""
     cache_key = adata_key("relation", iin)
     cached = await get_cached(cache_key)
     if cached is not None:
+        if case_id:
+            head = cached.get("affiliation_by_head") if isinstance(cached, dict) else None
+            founder = cached.get("affiliation_by_founder") if isinstance(cached, dict) else None
+            head_count = len(head or []) if isinstance(head, list) else 0
+            founder_count = len(founder or []) if isinstance(founder, list) else 0
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="relation_extended (cached)",
+                subject={"type": "BIN", "value": iin},
+                request={"endpoint": "/company/relation", "params": {"iinBin": iin}},
+                outcome={"status": "ok", "cached": True, "counts": {"byHead": head_count, "byFounder": founder_count}},
+            )
         return cached
 
     try:
@@ -531,7 +994,29 @@ async def fetch_relation_extended(iin: str) -> dict[str, Any]:
             if not isinstance(data, dict):
                 return {}
             await set_cached(cache_key, data, ADATA_TTL)
+            if case_id:
+                by_head = data.get("affiliation_by_head") or data.get("affiliationByHead") or []
+                by_founder = data.get("affiliation_by_founder") or data.get("affiliationByFounder") or []
+                head_count = len(by_head) if isinstance(by_head, list) else 0
+                founder_count = len(by_founder) if isinstance(by_founder, list) else 0
+                append_case_event(
+                    case_id,
+                    provider="Adata",
+                    action="relation_extended",
+                    subject={"type": "BIN", "value": iin},
+                    request={"endpoint": "/company/relation → /company/info/check", "params": {"iinBin": iin}},
+                    outcome={"status": "ok", "cached": False, "counts": {"byHead": head_count, "byFounder": founder_count}},
+                )
             return data
     except Exception as exc:
         logger.warning("fetch_relation_extended failed for IIN %s: %s", iin, exc)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="relation_extended",
+                subject={"type": "BIN", "value": iin},
+                request={"endpoint": "/company/relation", "params": {"iinBin": iin}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
         return {}
