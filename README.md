@@ -40,11 +40,13 @@ uv run python main.py
 uv run akashicompliance-worker
 ```
 
-Или всё сразу: `docker compose up --build` (сервисы `api`, `worker`, `redis`).
+Или всё сразу: `docker compose up --build` (сервисы `api`, `worker`, `redis`, `postgres`, `frontend`).
+
+**Docker (production):** с хоста наружу только **frontend `8000`**; API без `ports`. Nginx на reverse-proxy: `proxy_pass http://APP_SERVER:8000`. API для браузера — через `/backend-api` (rewrite Next → `http://api:8000`). См. `.env.example` (секция Docker Compose).
 
 Переменные: `REDIS_URL`, `TASK_QUEUE_ENABLED=true`. Без Redis, без worker или с `TASK_QUEUE_ENABLED=false` — fallback на `asyncio` в процессе API (как раньше). `GET /health` показывает `workerOk`, `activeBackend` и `warning`, если worker не запущен.
 
-Проверка: `GET /health` → `queue.redisOk`, `queue.workerOk`, `queue.activeBackend`.
+Проверка: `GET /health` → `queue.redisOk`, `queue.workerOk`, `queue.activeBackend` (в Docker снаружи: `https://your-host/backend-api/health`).
 
 ### Backend
 

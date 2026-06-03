@@ -329,32 +329,11 @@ CREATE TABLE chat_messages (
 
 ## Docker Compose
 
-```yaml
-services:
-  backend:
-    build: ./backend
-    ports: ["8000:8000"]
-    env_file: .env
+См. актуальный `docker-compose.yml` в корне репозитория:
 
-  celery:
-    build: ./backend
-    command: celery -A app.workers worker --loglevel=info
-
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: compliance
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-
-  redis:
-    image: redis:7-alpine
-
-  neo4j:
-    image: neo4j:5
-    ports: ["7474:7474", "7687:7687"]
-    environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
-```
+- **FRONTEND_HOST_PORT** (по умолчанию `8000`) — единственный порт на хосте → Next.js
+- **API** — `API_PORT` (по умолчанию `8000`) только внутри сети compose (`http://api:8000`)
+- **postgres**, **redis**, **worker** — без publish на хост
 
 ---
 

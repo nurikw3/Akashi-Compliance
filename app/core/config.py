@@ -39,6 +39,15 @@ def normalize_adata_individual_base_url(company_base_url: str) -> str:
     return "https://api.adata.kz/api/individual"
 
 
+def _default_api_base_url() -> str:
+    explicit = os.getenv("API_BASE_URL", "").strip()
+    if explicit:
+        return explicit
+    host = os.getenv("API_HOST", "127.0.0.1")
+    port = os.getenv("API_PORT", "8000")
+    return f"http://{host}:{port}"
+
+
 @dataclass
 class Settings:
     adata_token: str = os.getenv("ADATA_TOKEN", "")
@@ -80,13 +89,18 @@ class Settings:
     )
     sqlite_path: Path = BASE_DIR / os.getenv("SQLITE_PATH", "data/compliance.db")
     pdf_dir: Path = BASE_DIR / os.getenv("PDF_DIR", "generated-pdfs")
-    api_base_url: str = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+    api_port: int = int(os.getenv("API_PORT", "8000"))
+    api_bind_host: str = os.getenv("API_BIND_HOST", "0.0.0.0")
+    api_base_url: str = _default_api_base_url()
+    frontend_host_port: int = int(os.getenv("FRONTEND_HOST_PORT", "8000"))
+    frontend_container_port: int = int(os.getenv("FRONTEND_CONTAINER_PORT", "3000"))
     cors_origins: tuple[str, ...] = tuple(
         origin.strip()
         for origin in os.getenv(
             "CORS_ORIGINS",
             "http://localhost:3000,http://127.0.0.1:3000,"
-            "http://localhost:3001,http://127.0.0.1:3001",
+            "http://localhost:8000,http://127.0.0.1:8000,"
+            "https://ai.akashi.cloud",
         ).split(",")
         if origin.strip()
     )

@@ -138,7 +138,7 @@ cp .env.example .env
 docker compose up -d
 
 # 3. Открыть
-# Frontend: http://localhost:3001
+# Frontend (Docker): http://localhost:8000
 # API:      http://localhost:8000
 
 # 4. Применить LSEG к существующим данным

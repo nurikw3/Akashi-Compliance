@@ -1,10 +1,11 @@
 import uvicorn
 
 from app.api import app
+from app.core.config import settings
 
 
 def main() -> None:
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=settings.api_bind_host, port=settings.api_port)
 
 
 if __name__ == "__main__":

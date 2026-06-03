@@ -8,8 +8,8 @@
     "hash": "acdcd83860b3a10e1504476590b40a68"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/main.py": {
-    "mtime": 1780298981.4081943,
-    "hash": "e7c3d54beb2662f0e11584ca3440eeed"
+    "mtime": 1780466765.516242,
+    "hash": "92917e36068a086b3bf0474400e3a927"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/config.py": {
     "mtime": 1779914102.5865262,
@@ -24,8 +24,8 @@
     "hash": "f8039f97f5025d716ce3233ecfca2c85"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/core/config.py": {
-    "mtime": 1780380087.7354758,
-    "hash": "48c68f5af3ef02aa013ed09c41937383"
+    "mtime": 1780466765.7978067,
+    "hash": "ea45b58a5f8dc6e9555ef2e9d994946f"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/core/__init__.py": {
     "mtime": 1779914243.4669635,
@@ -52,7 +52,7 @@
     "hash": "a2ff90b9a4b74c0104dc431ad62a5f4f"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/models/serializers.py": {
-    "mtime": 1780381291.8607316,
+    "mtime": 1780461912.8986902,
     "hash": "79037f03f7ac91335e830ecca84d892b"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/models/__init__.py": {
@@ -80,7 +80,7 @@
     "hash": "02d1772a211d766751c71949316f8ee0"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/api/routes/cases.py": {
-    "mtime": 1780383078.5688899,
+    "mtime": 1780461912.8987632,
     "hash": "24f59a324b51d502198655d685947fd5"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/api/routes/providers.py": {
@@ -116,7 +116,7 @@
     "hash": "0d4e0f371a25062414863974695259b0"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/verification_log.py": {
-    "mtime": 1780381074.2834094,
+    "mtime": 1780461912.8985035,
     "hash": "a07969bcec311d6c31ed8df1f86116ca"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/affiliate_tree.py": {
@@ -124,7 +124,7 @@
     "hash": "6188e41167063032de45cdc600405c53"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/cache.py": {
-    "mtime": 1780378897.6921368,
+    "mtime": 1780461912.8981493,
     "hash": "a934361ef7988d8585d11c5cd7bab07b"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/__init__.py": {
@@ -136,15 +136,15 @@
     "hash": "5bfa673e03b4888c19c2adaeb3c35059"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/pipeline.py": {
-    "mtime": 1780381588.6325507,
-    "hash": "ac452e454962ca9a1da7c27f20502a6c"
+    "mtime": 1780464862.9417424,
+    "hash": "5f4eeb3011a8ed240969a9de5f0250b8"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/legacy_audits.py": {
     "mtime": 1779919132.6217566,
     "hash": "df5766d63fa04cc8d60035201a518b28"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/adata/client.py": {
-    "mtime": 1780381221.9998586,
+    "mtime": 1780461912.898952,
     "hash": "892fa1ce30f6e9c6488dd9c2c7e15716"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/adata/__init__.py": {
@@ -152,11 +152,11 @@
     "hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/adata/info_mapper.py": {
-    "mtime": 1780378906.1357865,
+    "mtime": 1780461912.8989818,
     "hash": "0acbf0a6344b494a8b7457b3099807b5"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/lseg/service.py": {
-    "mtime": 1780381244.1030347,
+    "mtime": 1780461912.8981264,
     "hash": "22b1555028c050c18bdf4eb0f201373d"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/lseg/mapper.py": {
@@ -188,7 +188,7 @@
     "hash": "5e218e5fb1f67ede4b7346f103f3bfb8"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/ai/jobs.py": {
-    "mtime": 1780381317.7704394,
+    "mtime": 1780461912.8985693,
     "hash": "0854a08d2c556f0793b585a296d892c8"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/ai/context.py": {
@@ -200,11 +200,11 @@
     "hash": "b2c62911c19ca81f680853a2f09315ee"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/ai/full_report.py": {
-    "mtime": 1780382738.2764857,
-    "hash": "a1e95c82365949b57b186af8a41e287d"
+    "mtime": 1780461912.8988876,
+    "hash": "bc76dfcd094f7fd71b0631ea2690463b"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/enrichment/service.py": {
-    "mtime": 1780381089.5702333,
+    "mtime": 1780461912.898636,
     "hash": "312c219e6fb805c1c6f00f22e54b7c24"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/enrichment/person.py": {
@@ -216,7 +216,7 @@
     "hash": "6ddf7bfad57d81c11b0db01e1d2c6d8e"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/enrichment/mapper.py": {
-    "mtime": 1780378906.1558914,
+    "mtime": 1780461912.89862,
     "hash": "a54e8894c01b67d6396886caca0dc53b"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/enrichment/__init__.py": {
@@ -228,11 +228,11 @@
     "hash": "d5b07e090543bf25d74d4f5781652287"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/enrichment/base.py": {
-    "mtime": 1780378887.8496344,
+    "mtime": 1780461912.8986487,
     "hash": "2702fbb756a9ebb45dd03e9de1f93bf6"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/enrichment/providers/adata.py": {
-    "mtime": 1780381098.0088727,
+    "mtime": 1780461912.8987863,
     "hash": "926c716ca313755bb85f37f3df1f59c5"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/app/services/enrichment/providers/__init__.py": {
@@ -260,8 +260,8 @@
     "hash": "f82d40129ab70e95110c0470895b366c"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/next.config.mjs": {
-    "mtime": 1780298981.4826384,
-    "hash": "2293a565e08d96fa86d4942918461b39"
+    "mtime": 1780466767.562863,
+    "hash": "0d7d7b048ead513bc80129a186ca2f0c"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/next-env.d.ts": {
     "mtime": 1779926191.1808064,
@@ -288,7 +288,7 @@
     "hash": "b4cc40e9e15e4cd6d304cb54de36d976"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/app/cases/[id]/full-report/page.tsx": {
-    "mtime": 1780384525.661262,
+    "mtime": 1780461912.8986661,
     "hash": "07993d5a831d27e31e67260a36327d55"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/components/theme-provider.tsx": {
@@ -296,7 +296,7 @@
     "hash": "3cd89febe6ca9cb784ba567481e50b5d"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/components/markdown-content.tsx": {
-    "mtime": 1780382744.1469963,
+    "mtime": 1780461912.898168,
     "hash": "da7c378de1f17fdd750cf1799c175f37"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/components/excel-uploader.tsx": {
@@ -304,7 +304,7 @@
     "hash": "da741c192fbf82b1f057a7e1b550d1d7"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/components/report-viewer.tsx": {
-    "mtime": 1780384504.089235,
+    "mtime": 1780461912.898704,
     "hash": "35af06f4e7b2ce5bb32c418d240a978e"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/components/bin-uploader.tsx": {
@@ -316,8 +316,8 @@
     "hash": "3990ff2c31d7ec533ce71ef8b9a6a597"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/components/case-detail.tsx": {
-    "mtime": 1780381364.2446008,
-    "hash": "319a42496891624c8869f864bc90ca12"
+    "mtime": 1780461912.904928,
+    "hash": "cf7fac60e8098cd6c99c176abeb94352"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/components/affiliates-graph.tsx": {
     "mtime": 1780347977.120441,
@@ -580,8 +580,8 @@
     "hash": "efc561f57463568c2cd8192d4c3573f5"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/lib/api.ts": {
-    "mtime": 1780383081.619145,
-    "hash": "680421ac8344064ad901eff3a5c76a61"
+    "mtime": 1780466767.7763844,
+    "hash": "f49171027688fd1d42e52578058ddea9"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/lib/data-source-label.ts": {
     "mtime": 1780331713.6940806,
@@ -592,7 +592,7 @@
     "hash": "8553b5f95a1b0e701bdd8f7956eb8bdb"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/lib/types.ts": {
-    "mtime": 1780381329.6379697,
+    "mtime": 1780461912.8980958,
     "hash": "0c26b1c3bc8da0cf144ddc1704bc68fe"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/lib/mock-data.ts": {
@@ -624,7 +624,7 @@
     "hash": "7085764cffaea26f8af853e5c151d01b"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/tests/test_full_report_formatting.py": {
-    "mtime": 1780382757.9144168,
+    "mtime": 1780461912.898679,
     "hash": "01cd1cb192bec29bd024c5bfbdbb82e2"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/tests/test_auth.py": {
@@ -648,7 +648,7 @@
     "hash": "63b2471f85c098ab7b7692825dd26a5c"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/tests/test_adata_individual_courts.py": {
-    "mtime": 1780380178.6445706,
+    "mtime": 1780461912.8987994,
     "hash": "268eb7c1f1aba1e8af6339f05438abf8"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/tests/test_risk_scoring.py": {
@@ -672,7 +672,7 @@
     "hash": "1f5906c4d070d14898a6ce71e97328e4"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/tests/test_config.py": {
-    "mtime": 1780380123.7658343,
+    "mtime": 1780461912.8988113,
     "hash": "112982920aa7df733b75aec0367f8686"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/tests/test_lookup.py": {
@@ -684,20 +684,20 @@
     "hash": "aa1f3642e71e8b11fe577480f584e0df"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/PRODUCT.md": {
-    "mtime": 1780298981.3978164,
-    "hash": "c796dcfae57a737ba42d8ad778355549"
+    "mtime": 1780466671.1772497,
+    "hash": "4382463b59d360552025b6e5feb87f66"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/project.md": {
-    "mtime": 1779913565.385012,
-    "hash": "78a66d62f148fdc6d6862f383f111ab1"
+    "mtime": 1780466776.5537143,
+    "hash": "5f8e0e0589db7ca419f6aeefd5023a68"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/README.md": {
-    "mtime": 1779925122.8656223,
-    "hash": "fb24229c5619b018aaa5a8c6a548a0ee"
+    "mtime": 1780466663.4423575,
+    "hash": "10e90e92371b041369e33f0c702045fc"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/docker-compose.yml": {
-    "mtime": 1780346614.0530248,
-    "hash": "971f1ba62390641c3f39e617fd1fb1a0"
+    "mtime": 1780466767.336942,
+    "hash": "93f3d2ef65aae8f0f0e2d37a1c86f6bc"
   },
   "/Users/nurasyk/Desktop/python/projects/AkashiCompliance/frontend/public/placeholder-logo.svg": {
     "mtime": 1779911232.0,
