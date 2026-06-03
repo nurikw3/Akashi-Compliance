@@ -543,9 +543,17 @@ def map_info_data(
     related, founders_aff = _parse_affiliates(diagram, main_iin=iin)
     founders_list = _founders_from_block(founders_block) or founders_aff
     if founders_aff:
-        names = {f["name"] for f in founders_list}
+        by_name = {f["name"]: f for f in founders_list}
         for f in founders_aff:
-            if f["name"] not in names:
+            existing = by_name.get(f["name"])
+            if existing:
+                if not existing.get("iin") and f.get("iin"):
+                    existing["iin"] = f["iin"]
+                if f.get("is_company") and not existing.get("is_company"):
+                    existing["is_company"] = True
+                    if "юрлицо" not in existing.get("role", "").lower():
+                        existing["role"] = existing.get("role", "Учредитель") + " (юрлицо)"
+            else:
                 founders_list.append(f)
 
     # Only critical / sanction-related flags — not «Налоговый риск: средняя» etc.

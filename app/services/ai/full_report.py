@@ -136,6 +136,7 @@ def _list_data_sources(enriched: dict[str, Any]) -> list[str]:
         ("relationExtended", "Adata Relation Extended"),
         ("directorProfile", "Adata профиль директора (ИИН)"),
         ("affiliateProfiles", "Adata данные аффилиатов L1"),
+        ("individualProfiles", "Adata профили физлиц (директор + учредители)"),
         ("individualCourts", "Adata персональные судебные дела (ИИН)"),
         ("companyCourtCases", "Adata судебные дела компании (детально)"),
         ("scoreBreakdown", "Скоринг (7 метрик)"),
@@ -1420,6 +1421,65 @@ def _build_full_context(row: dict[str, Any]) -> str:
         )
         parts.append(f"\n## ПРОФИЛЬ ДИРЕКТОРА (по ИИН через Adata)\n{director_text}")
         _log_section("ПРОФИЛЬ ДИРЕКТОРА", director_text)
+
+    individual_profiles = enriched.get("individualProfiles") or {}
+    if individual_profiles:
+        ip_lines = []
+        for p_iin, prof in individual_profiles.items():
+            if not isinstance(prof, dict):
+                continue
+            basic = prof.get("basicFl") or {}
+            reliability = prof.get("reliabilityFl") or {}
+            name = basic.get("name") or f"ИИН {p_iin}"
+            age = basic.get("age")
+            alive = basic.get("alive")
+            pep = basic.get("is_public_official")
+            flags: list[str] = []
+            if reliability.get("terrorist"):
+                flags.append("ТЕРРОРИСТ")
+            if reliability.get("terrorism_involved"):
+                flags.append("причастен к терроризму")
+            if reliability.get("pedophile"):
+                flags.append("реестр педофилов")
+            if reliability.get("missing"):
+                flags.append("пропавший без вести")
+            if reliability.get("citizen_hiding_from_investigation"):
+                flags.append("скрывается от следствия")
+            if reliability.get("enforcement_debt"):
+                flags.append("долг по исп. производству")
+            if reliability.get("ban_leaving"):
+                flags.append(f"запрет на выезд (сумма: {reliability.get('ban_leaving_sum', 0)})")
+            if reliability.get("alimony_payer"):
+                flags.append("алиментщик")
+            tax_debt = reliability.get("tax_debt") or 0
+            if isinstance(tax_debt, (int, float)) and tax_debt > 0:
+                flags.append(f"налоговый долг: {tax_debt:,.0f} тг".replace(",", " "))
+
+            line = f"- {name} (ИИН {p_iin})"
+            if age:
+                line += f", {age} лет"
+            if alive is False:
+                line += ", УМЕР"
+            if pep:
+                line += ", ПДЛ (публичное должностное лицо)"
+            if flags:
+                line += f" | Флаги: {'; '.join(flags)}"
+            else:
+                line += " | Флаги: нет"
+
+            court = prof.get("courtCaseFl") or {}
+            civil = int(court.get("total_civil_count") or 0)
+            criminal = int(court.get("total_criminal_count") or 0)
+            admin = int(court.get("total_administrative_count") or 0)
+            if civil + criminal + admin > 0:
+                line += f" | Суды: Г:{civil} У:{criminal} А:{admin}"
+
+            ip_lines.append(line)
+
+        if ip_lines:
+            ip_text = "\n".join(ip_lines)
+            parts.append(f"\n## ПРОФИЛИ ФИЗЛИЦ (директор + учредители, Adata individual/info)\n{ip_text}")
+            _log_section("ПРОФИЛИ ФИЗЛИЦ", ip_text)
 
     affiliate_profiles = enriched.get("affiliateProfiles") or {}
     if affiliate_profiles:

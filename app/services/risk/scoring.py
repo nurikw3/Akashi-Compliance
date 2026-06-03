@@ -152,12 +152,13 @@ class RiskScorer:
         enrichment: dict[str, Any],
         lseg: dict[str, Any] | None = None,
         affiliate_tree: dict[str, Any] | None = None,
+        individual_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> ScoringResult:
         breakdown: list[MetricResult] = [
-            self._metric_sanctions(enrichment, lseg),
+            self._metric_sanctions(enrichment, lseg, individual_profiles),
             self._metric_courts(enrichment),
             self._metric_taxes(enrichment),
-            self._metric_pep(lseg),
+            self._metric_pep(lseg, individual_profiles),
             self._metric_legal_status(enrichment),
             self._metric_adverse_media(lseg),
             self._metric_affiliate_risk(enrichment, affiliate_tree),
@@ -186,10 +187,42 @@ class RiskScorer:
 
     # ── 1. Sanctions (30 pts) ────────────────────────────────────────────
 
+    @staticmethod
+    def _individual_reliability_flags(
+        profiles: dict[str, dict[str, Any]] | None,
+    ) -> tuple[bool, bool, bool]:
+        """Extract terrorist, enforcement_debt, is_public_official from individual profiles."""
+        has_terrorist = False
+        has_enforcement = False
+        has_pep = False
+        for profile in (profiles or {}).values():
+            reliability = profile.get("reliabilityFl") or {}
+            basic = profile.get("basicFl") or {}
+            if reliability.get("terrorist") or reliability.get("terrorism_involved"):
+                has_terrorist = True
+            if reliability.get("enforcement_debt"):
+                has_enforcement = True
+            if basic.get("is_public_official"):
+                has_pep = True
+        return has_terrorist, has_enforcement, has_pep
+
     def _metric_sanctions(
-        self, enrichment: dict[str, Any], lseg: dict[str, Any] | None
+        self,
+        enrichment: dict[str, Any],
+        lseg: dict[str, Any] | None,
+        individual_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> MetricResult:
         max_pts = 30.0
+
+        has_terrorist, _, _ = self._individual_reliability_flags(individual_profiles)
+        if has_terrorist:
+            return MetricResult(
+                metric="sanctions",
+                points=max_pts,
+                max_points=max_pts,
+                reason="Adata individual/info: связанное лицо в списке террористов/экстремистов",
+                source="adata",
+            )
 
         if lseg and lseg.get("screenedAt"):
             san = lseg.get("sanctions") or {}
@@ -405,38 +438,60 @@ class RiskScorer:
 
     # ── 4. PEP exposure (10 pts) ─────────────────────────────────────────
 
-    def _metric_pep(self, lseg: dict[str, Any] | None) -> MetricResult:
+    def _metric_pep(
+        self,
+        lseg: dict[str, Any] | None,
+        individual_profiles: dict[str, dict[str, Any]] | None = None,
+    ) -> MetricResult:
         max_pts = 10.0
-        if not lseg:
-            return MetricResult(
-                metric="pep",
-                points=0,
-                max_points=max_pts,
-                reason="LSEG не подключён — PEP-скрининг не выполнен",
-                source="none",
-            )
 
-        pep = lseg.get("pep") or {}
-        if pep.get("isHit"):
-            individuals = pep.get("individuals") or []
-            names = [
-                i.get("primaryName", "")
-                for i in individuals[:2]
-                if i.get("primaryName")
+        _, _, has_pep_adata = self._individual_reliability_flags(individual_profiles)
+
+        if lseg:
+            pep = lseg.get("pep") or {}
+            if pep.get("isHit"):
+                individuals = pep.get("individuals") or []
+                names = [
+                    i.get("primaryName", "")
+                    for i in individuals[:2]
+                    if i.get("primaryName")
+                ]
+                return MetricResult(
+                    metric="pep",
+                    points=max_pts,
+                    max_points=max_pts,
+                    reason=f"PEP совпадение (руководство): {', '.join(names) or 'физлицо'}",
+                    source="lseg",
+                )
+
+        if has_pep_adata:
+            pep_names = [
+                (p.get("basicFl") or {}).get("name", "")
+                for p in (individual_profiles or {}).values()
+                if (p.get("basicFl") or {}).get("is_public_official")
             ]
             return MetricResult(
                 metric="pep",
                 points=max_pts,
                 max_points=max_pts,
-                reason=f"PEP совпадение (руководство): {', '.join(names) or 'физлицо'}",
-                source="lseg",
+                reason=f"Adata: публичное должностное лицо — {', '.join(pep_names[:2]) or 'связанное лицо'}",
+                source="adata",
+            )
+
+        if not lseg:
+            return MetricResult(
+                metric="pep",
+                points=0,
+                max_points=max_pts,
+                reason="LSEG не подключён — PEP-скрининг не выполнен; Adata: PEP не выявлен",
+                source="none",
             )
 
         return MetricResult(
             metric="pep",
             points=0,
             max_points=max_pts,
-            reason="PEP-совпадений по руководителю не обнаружено",
+            reason="PEP-совпадений не обнаружено (LSEG + Adata)",
             source="lseg",
         )
 

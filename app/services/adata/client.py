@@ -602,6 +602,86 @@ def _individual_info_check_url() -> str:
     return _individual_token_path("info/check")
 
 
+async def fetch_individual_info(
+    iin: str, *, case_id: str | None = None
+) -> dict[str, Any]:
+    """Return individual profile from ``/api/individual/info``, cached 12h.
+
+    Response includes basicFl (name, birth, alive, is_public_official),
+    reliabilityFl (terrorist, enforcement_debt, etc.), courtCaseFl, affiliationFl.
+    """
+    cache_key = adata_key("individual_info", iin)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="individual_info (cached)",
+                subject={"type": "IIN", "value": iin},
+                request={"endpoint": "/individual/info", "params": {"iinBin": iin}},
+                outcome={"status": "ok", "cached": True},
+            )
+        return cached
+
+    if not settings.adata_token:
+        return {}
+
+    try:
+        timeout = settings.adata_timeout_seconds
+        check_url = _individual_info_check_url()
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = _individual_token_path("info")
+            response = await client.get(url, params={"iinBin": iin})
+            response.raise_for_status()
+            payload = response.json()
+            if not payload.get("success", True) and "token" not in payload:
+                logger.warning("individual info init failed for IIN %s: %s", iin, payload.get("message") or payload)
+                return {}
+            job_token = payload.get("token")
+            if not job_token:
+                data = payload.get("data")
+                if isinstance(data, dict):
+                    await set_cached(cache_key, data, ADATA_TTL)
+                    return data
+                return {}
+
+            attempts = settings.adata_poll_attempts
+            delay = settings.adata_poll_delay_seconds
+            for _ in range(attempts):
+                await asyncio.sleep(delay)
+                check = await client.get(check_url, params={"token": job_token})
+                check.raise_for_status()
+                result = check.json()
+                data = result.get("data")
+                if isinstance(data, dict) and data.get("basicFl"):
+                    await set_cached(cache_key, data, ADATA_TTL)
+                    if case_id:
+                        append_case_event(
+                            case_id,
+                            provider="Adata",
+                            action="individual_info",
+                            subject={"type": "IIN", "value": iin},
+                            request={"endpoint": "/individual/info → /individual/info/check", "params": {"iinBin": iin}},
+                            outcome={"status": "ok", "cached": False},
+                        )
+                    return data
+
+            return {}
+    except Exception as exc:
+        logger.warning("fetch_individual_info failed for IIN %s: %s", iin, exc)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="individual_info",
+                subject={"type": "IIN", "value": iin},
+                request={"endpoint": "/individual/info", "params": {"iinBin": iin}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
+        return {}
+
+
 def _normalize_court_documents(docs_raw: Any) -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = []
     if not isinstance(docs_raw, list):

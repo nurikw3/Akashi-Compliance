@@ -13,6 +13,7 @@ from app.services.adata.client import (
     fetch_company_info,
     fetch_director_iin,
     fetch_individual_court_cases,
+    fetch_individual_info,
     fetch_non_resident_affiliations,
     fetch_relation_extended,
     fetch_trustworthy_plus,
@@ -549,6 +550,42 @@ async def process_case(case_id: str) -> None:
             main_bin, case_id=case_id
         )
 
+        # Fetch individual info for director + founders (physical persons)
+        individual_profiles: dict[str, dict[str, Any]] = {}
+        founder_iins: list[str] = []
+        for person in (enrichment.get("affiliates") or {}).get("individuals") or []:
+            p_iin = _normalize_iin(person.get("iin"))
+            if p_iin and not person.get("is_company"):
+                founder_iins.append(p_iin)
+        director_iin = _normalize_iin(
+            enrichment.get("companyInfo", {}).get("director_iin")
+        )
+        all_person_iins: list[str] = []
+        seen_person: set[str] = set()
+        for candidate in [director_iin, *founder_iins]:
+            if candidate and candidate not in seen_person:
+                seen_person.add(candidate)
+                all_person_iins.append(candidate)
+            if len(all_person_iins) >= 6:
+                break
+        if all_person_iins:
+            info_results = await asyncio.gather(
+                *[fetch_individual_info(p_iin, case_id=case_id) for p_iin in all_person_iins],
+                return_exceptions=True,
+            )
+            for p_iin, result in zip(all_person_iins, info_results):
+                if isinstance(result, BaseException):
+                    logger.warning("fetch_individual_info failed for %s: %s", p_iin, result)
+                elif isinstance(result, dict) and result:
+                    individual_profiles[p_iin] = result
+
+        # Re-score with individual profiles (terrorist, PEP, enforcement)
+        if individual_profiles:
+            scoring = _scorer.calculate(
+                enrichment, lseg_data, affiliate_tree, individual_profiles
+            )
+            assessment["riskLevel"] = scoring.risk_level
+
         total_individual_cases = sum(len(v) for v in individual_courts.values() if isinstance(v, list))
         existing = add_event_to_enriched(
             existing,
@@ -659,6 +696,7 @@ async def process_case(case_id: str) -> None:
                 "individualCourts": individual_courts,
                 "individualCourtsMeta": individual_courts_meta,
                 "companyCourtCases": company_court_cases,
+                "individualProfiles": individual_profiles,
             },
             sources=sources,
             conclusion="",
