@@ -298,30 +298,6 @@ export default function ReportBuilderPage() {
                 </p>
               </div>
             </div>
-            {enrichment.courts.cases.length > 0 && (
-              <table className="w-full text-xs border-collapse">
-                <thead>
-                  <tr className="bg-neutral-50 text-neutral-500 text-left">
-                    <th className="px-2 py-1.5 border border-neutral-200">Тип</th>
-                    <th className="px-2 py-1.5 border border-neutral-200">Дата</th>
-                    <th className="px-2 py-1.5 border border-neutral-200">Статус</th>
-                    <th className="px-2 py-1.5 border border-neutral-200">AI-анализ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {enrichment.courts.cases.slice(0, 10).map((c, i) => (
-                    <tr key={i} className="border-b border-neutral-100">
-                      <td className="px-2 py-1.5 border border-neutral-200">{c.type}</td>
-                      <td className="px-2 py-1.5 border border-neutral-200">{c.date}</td>
-                      <td className="px-2 py-1.5 border border-neutral-200">{c.status}</td>
-                      <td className="px-2 py-1.5 border border-neutral-200 text-neutral-500">
-                        {c.aiAnalysis ? `${c.aiAnalysis.category} · ${c.aiAnalysis.severity} · ${c.aiAnalysis.summary_ru}` : '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
           </section>
         )}
 

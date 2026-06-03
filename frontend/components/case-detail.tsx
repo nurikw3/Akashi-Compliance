@@ -61,7 +61,132 @@ function formatCurrency(amount: number) {
   return new Intl.NumberFormat('ru-RU').format(amount) + ' тг'
 }
 
-function IndividualCourtsSection({ caseData }: { caseData: Case }) {
+type CourtsTab = 'company' | 'personal'
+
+function DetailedCourtCasesList({
+  cases,
+  keyPrefix,
+  expandedCases,
+  onToggleCase,
+}: {
+  cases: IndividualCourtCase[]
+  keyPrefix: string
+  expandedCases: Set<string>
+  onToggleCase: (key: string) => void
+}) {
+  if (!cases.length) return null
+
+  return (
+    <div className="space-y-3 mt-4">
+      {cases.map((courtCase, idx) => {
+        const caseKey = `${keyPrefix}-${courtCase.number || idx}`
+        const isExpanded = expandedCases.has(caseKey)
+        const hasDetails =
+          (courtCase.history?.length ?? 0) > 0 || (courtCase.documents?.length ?? 0) > 0
+        return (
+          <div
+            key={caseKey}
+            className="bg-neutral-50 rounded-lg border border-neutral-100 overflow-hidden"
+          >
+            <button
+              type="button"
+              onClick={() => onToggleCase(caseKey)}
+              className="w-full flex items-start gap-2 p-3 text-left hover:bg-neutral-100/80 transition-colors"
+            >
+              {hasDetails ? (
+                isExpanded ? (
+                  <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-neutral-400" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-neutral-400" />
+                )
+              ) : (
+                <span className="w-4 h-4 shrink-0" />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                  <span className="font-medium text-neutral-900">{courtCase.number || '—'}</span>
+                  <span className="text-neutral-400">•</span>
+                  <span className="text-neutral-700">{courtCase.type || '—'}</span>
+                  {courtCase.role && (
+                    <>
+                      <span className="text-neutral-400">•</span>
+                      <span className="text-neutral-600">{courtCase.role}</span>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-neutral-500 mt-1">
+                  <span>{courtCase.court || '—'}</span>
+                  <span>{courtCase.date || '—'}</span>
+                  {courtCase.category && <span>{courtCase.category}</span>}
+                  {courtCase.result && (
+                    <span className="text-neutral-700">{courtCase.result}</span>
+                  )}
+                </div>
+              </div>
+            </button>
+            {isExpanded && hasDetails && (
+              <div className="px-3 pb-3 pt-0 ml-6 border-t border-neutral-100">
+                {(courtCase.documents?.length ?? 0) > 0 && (
+                  <div className="mt-3 mb-4">
+                    <p className="text-xs text-neutral-500 mb-2">Документы по делу</p>
+                    <div className="flex flex-wrap gap-3">
+                      {courtCase.documents!.map((doc, docIdx) => (
+                        <a
+                          key={docIdx}
+                          href={doc.doc_link ?? '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline text-sm"
+                        >
+                          📄 {doc.file_name || 'Документ'}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(courtCase.history?.length ?? 0) > 0 && (
+                  <>
+                    <p className="text-xs text-neutral-500 mt-3 mb-2">История событий</p>
+                    <div className="space-y-2">
+                      {courtCase.history!.map((event, eventIdx) => (
+                        <div
+                          key={eventIdx}
+                          className="text-sm bg-white rounded-md border border-neutral-100 p-2.5"
+                        >
+                          <div className="flex flex-wrap gap-x-2 text-neutral-700">
+                            <span className="text-neutral-500">{event.event_date}</span>
+                            <span>{event.name}</span>
+                          </div>
+                          {(event.documents?.length ?? 0) > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-3">
+                              {event.documents!.map((doc, docIdx) => (
+                                <a
+                                  key={docIdx}
+                                  href={doc.doc_link}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:underline text-sm"
+                                >
+                                  📄 {doc.file_name}
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function PersonalCourtsPanel({ caseData }: { caseData: Case }) {
   const [expandedCases, setExpandedCases] = useState<Set<string>>(new Set())
   const individualCourts = caseData.individualCourts
   const individualCourtsMeta = caseData.individualCourtsMeta ?? {}
@@ -84,137 +209,153 @@ function IndividualCourtsSection({ caseData }: { caseData: Case }) {
     })
   }
 
+  if (!hasData) {
+    return (
+      <p className="text-sm text-neutral-500">
+        {directorIin
+          ? `Персональные судебные дела не найдены (ИИН ${directorIin})`
+          : 'Персональные судебные дела не найдены (ИИН директора недоступен)'}
+      </p>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {entries.map(([iin, cases]) => {
+        if (!cases?.length) return null
+        const meta = individualCourtsMeta[iin]
+        const personName = meta?.name || `ИИН ${iin}`
+        return (
+          <div key={iin} className="border border-neutral-100 rounded-lg p-4">
+            <div className="mb-4">
+              <p className="font-medium text-neutral-900">{personName}</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-neutral-500 mt-1">
+                <span className="font-mono">ИИН: {iin}</span>
+                {meta?.role && <span>Роль: {meta.role}</span>}
+                {meta?.companyName && <span>Компания: {meta.companyName}</span>}
+              </div>
+            </div>
+            <DetailedCourtCasesList
+              cases={cases}
+              keyPrefix={iin}
+              expandedCases={expandedCases}
+              onToggleCase={toggleCase}
+            />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function CourtsSection({
+  caseData,
+  courtsSource,
+}: {
+  caseData: Case
+  courtsSource: DataSourceKind
+}) {
+  const [tab, setTab] = useState<CourtsTab>('company')
+  const [expandedCompanyCases, setExpandedCompanyCases] = useState<Set<string>>(new Set())
+  const enrichment = caseData.enrichment
+  const courts = enrichment?.courts
+  const companyCourtCases = caseData.companyCourtCases ?? []
+  const companyHasData =
+    courtsSource === 'adata' ||
+    (courts?.activeCases ?? 0) > 0 ||
+    (courts?.completedCases ?? 0) > 0 ||
+    (courts?.totalAmount ?? 0) > 0 ||
+    companyCourtCases.length > 0
+
+  const toggleCompanyCase = (key: string) => {
+    setExpandedCompanyCases((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
   return (
     <div className="bg-white rounded-xl border border-neutral-200 p-5">
       <SectionHeading
         icon={Gavel}
-        iconClassName="text-violet-600"
-        title="Судебные дела (персональные)"
-        source="adata"
+        iconClassName="text-amber-600"
+        title="Судебные дела"
+        source={courtsSource}
       />
-      {!hasData ? (
-        <p className="text-sm text-neutral-500">
-          {directorIin
-            ? `Персональные судебные дела не найдены (ИИН ${directorIin})`
-            : 'Персональные судебные дела не найдены (ИИН директора недоступен)'}
-        </p>
-      ) : (
-        <div className="space-y-6">
-          {entries.map(([iin, cases]) => {
-            if (!cases?.length) return null
-            const meta = individualCourtsMeta[iin]
-            const personName = meta?.name || `ИИН ${iin}`
-            return (
-              <div key={iin} className="border border-neutral-100 rounded-lg p-4">
-                <div className="mb-4">
-                  <p className="font-medium text-neutral-900">{personName}</p>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-neutral-500 mt-1">
-                    <span className="font-mono">ИИН: {iin}</span>
-                    {meta?.role && <span>Роль: {meta.role}</span>}
-                    {meta?.companyName && <span>Компания: {meta.companyName}</span>}
-                  </div>
-                </div>
-                <div className="space-y-3">
-                  {cases.map((courtCase: IndividualCourtCase, idx) => {
-                    const caseKey = `${iin}-${courtCase.number || idx}`
-                    const isExpanded = expandedCases.has(caseKey)
-                    return (
-                      <div
-                        key={caseKey}
-                        className="bg-neutral-50 rounded-lg border border-neutral-100 overflow-hidden"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => toggleCase(caseKey)}
-                          className="w-full flex items-start gap-2 p-3 text-left hover:bg-neutral-100/80 transition-colors"
-                        >
-                          {isExpanded ? (
-                            <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-neutral-400" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-neutral-400" />
-                          )}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                              <span className="font-medium text-neutral-900">
-                                {courtCase.number || '—'}
-                              </span>
-                              <span className="text-neutral-400">•</span>
-                              <span className="text-neutral-700">{courtCase.type || '—'}</span>
-                            </div>
-                            <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-neutral-500 mt-1">
-                              <span>{courtCase.court || '—'}</span>
-                              <span>{courtCase.date || '—'}</span>
-                              {courtCase.result && (
-                                <span className="text-neutral-700">{courtCase.result}</span>
-                              )}
-                            </div>
-                          </div>
-                        </button>
-                        {isExpanded &&
-                          ((courtCase.history?.length ?? 0) > 0 ||
-                            (courtCase.documents?.length ?? 0) > 0) && (
-                          <div className="px-3 pb-3 pt-0 ml-6 border-t border-neutral-100">
-                            {(courtCase.documents?.length ?? 0) > 0 && (
-                              <div className="mt-3 mb-4">
-                                <p className="text-xs text-neutral-500 mb-2">Документы по делу</p>
-                                <div className="flex flex-wrap gap-3">
-                                  {courtCase.documents!.map((doc, docIdx) => (
-                                    <a
-                                      key={docIdx}
-                                      href={doc.doc_link ?? '#'}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-blue-600 hover:underline text-sm"
-                                    >
-                                      📄 {doc.file_name || 'Документ'}
-                                    </a>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                            {(courtCase.history?.length ?? 0) > 0 && (
-                            <>
-                            <p className="text-xs text-neutral-500 mt-3 mb-2">История событий</p>
-                            <div className="space-y-2">
-                              {courtCase.history!.map((event, eventIdx) => (
-                                <div
-                                  key={eventIdx}
-                                  className="text-sm bg-white rounded-md border border-neutral-100 p-2.5"
-                                >
-                                  <div className="flex flex-wrap gap-x-2 text-neutral-700">
-                                    <span className="text-neutral-500">{event.event_date}</span>
-                                    <span>{event.name}</span>
-                                  </div>
-                                  {(event.documents?.length ?? 0) > 0 && (
-                                    <div className="mt-2 flex flex-wrap gap-3">
-                                      {event.documents!.map((doc, docIdx) => (
-                                        <a
-                                          key={docIdx}
-                                          href={doc.doc_link}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-blue-600 hover:underline text-sm"
-                                        >
-                                          📄 {doc.file_name}
-                                        </a>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                            </>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
+      <div className="flex flex-wrap gap-2 mb-4">
+        <button
+          type="button"
+          onClick={() => setTab('company')}
+          className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+            tab === 'company'
+              ? 'bg-neutral-900 text-white border-neutral-900'
+              : 'bg-white text-neutral-700 border-neutral-200 hover:border-neutral-300'
+          }`}
+        >
+          Компания
+          {caseData.iinBin ? (
+            <span className="ml-1.5 font-mono text-xs opacity-80">({caseData.iinBin})</span>
+          ) : null}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('personal')}
+          className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+            tab === 'personal'
+              ? 'bg-neutral-900 text-white border-neutral-900'
+              : 'bg-white text-neutral-700 border-neutral-200 hover:border-neutral-300'
+          }`}
+        >
+          Персональные
+        </button>
+      </div>
+
+      {tab === 'company' ? (
+        companyHasData && courts ? (
+          <>
+            {courts.note && (
+              <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
+                {courts.note}
+              </p>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+              <div>
+                <p className="text-neutral-500">Активные дела</p>
+                <p className="text-neutral-900 font-medium">{courts.activeCases}</p>
               </div>
-            )
-          })}
-        </div>
+              <div>
+                <p className="text-neutral-500">Завершенные дела</p>
+                <p className="text-neutral-900">{courts.completedCases}</p>
+              </div>
+              <div>
+                <p className="text-neutral-500">Общая сумма исков</p>
+                <p className="text-neutral-900">{formatCurrency(courts.totalAmount)}</p>
+              </div>
+            </div>
+            {companyCourtCases.length > 0 && (
+              <>
+                <p className="text-sm text-neutral-600 mt-6 mb-1">
+                  Детальные дела ({companyCourtCases.length})
+                </p>
+                <DetailedCourtCasesList
+                  cases={companyCourtCases}
+                  keyPrefix={caseData.iinBin || 'company'}
+                  expandedCases={expandedCompanyCases}
+                  onToggleCase={toggleCompanyCase}
+                />
+              </>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-neutral-500">Нет данных по компании</p>
+        )
+      ) : (
+        <PersonalCourtsPanel caseData={caseData} />
       )}
     </div>
   )
@@ -384,73 +525,7 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
         )}
       </div>
 
-      {/* Courts */}
-      <div className="bg-white rounded-xl border border-neutral-200 p-5">
-        <SectionHeading
-          icon={Gavel}
-          iconClassName="text-amber-600"
-          title={
-            enrichment.courts.scope === 'director'
-              ? 'Судебные дела (руководитель)'
-              : 'Судебные дела'
-          }
-          source={src('courts')}
-        />
-        {enrichment.courts.note && (
-          <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
-            {enrichment.courts.note}
-          </p>
-        )}
-        {src('courts') === 'adata' ||
-        enrichment.courts.activeCases > 0 ||
-        enrichment.courts.completedCases > 0 ||
-        enrichment.courts.cases.length > 0 ? (
-        <>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mb-4">
-          <div>
-            <p className="text-neutral-500">Активные дела</p>
-            <p className="text-neutral-900 font-medium">{enrichment.courts.activeCases}</p>
-          </div>
-          <div>
-            <p className="text-neutral-500">Завершенные дела</p>
-            <p className="text-neutral-900">{enrichment.courts.completedCases}</p>
-          </div>
-          <div>
-            <p className="text-neutral-500">Общая сумма исков</p>
-            <p className="text-neutral-900">{formatCurrency(enrichment.courts.totalAmount)}</p>
-          </div>
-        </div>
-        {enrichment.courts.cases.length > 0 ? (
-          <div className="border-t border-neutral-100 pt-4 mt-4">
-            <p className="text-sm text-neutral-500 mb-2">История дел:</p>
-            <div className="space-y-2">
-              {enrichment.courts.cases.map((c, i) => (
-                <div key={i} className="flex items-center justify-between text-sm bg-neutral-50 rounded-lg p-3">
-                  <div>
-                    <span className="text-neutral-900">{c.type}</span>
-                    <span className="text-neutral-400 mx-2">•</span>
-                    <span className="text-neutral-500">{c.date}</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {c.amount > 0 && (
-                      <span className="text-neutral-900">{formatCurrency(c.amount)}</span>
-                    )}
-                    <span className="text-xs text-neutral-600">{c.status}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <p className="text-sm text-neutral-500">Судебных дел не зафиксировано.</p>
-        )}
-        </>
-        ) : (
-          <p className="text-sm text-neutral-500">Нет данных</p>
-        )}
-      </div>
-
-      <IndividualCourtsSection caseData={caseData} />
+      <CourtsSection caseData={caseData} courtsSource={src('courts')} />
 
       {/* Risk / compliance */}
       <div className="bg-white rounded-xl border border-neutral-200 p-5">
@@ -617,13 +692,14 @@ function AssessmentTab({ caseData }: { caseData: Case }) {
     return <LoadingGif message="Готовим оценку риска…" />
   }
 
-  const riskConfig = {
+  const riskConfig: Record<string, { bg: string; border: string; text: string; label: string }> = {
     low: { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700', label: 'Низкий риск' },
     medium: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', label: 'Средний риск' },
     high: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', label: 'Высокий риск' },
+    critical: { bg: 'bg-red-100', border: 'border-red-400', text: 'text-red-900', label: 'Критический риск' },
   }
 
-  const config = riskConfig[assessment.riskLevel]
+  const config = riskConfig[assessment.riskLevel] ?? riskConfig.high
 
   return (
     <div className="space-y-6">
@@ -632,7 +708,7 @@ function AssessmentTab({ caseData }: { caseData: Case }) {
         <div className="flex items-center gap-3 mb-4">
           <div className={`w-12 h-12 rounded-full ${config.bg} border-2 ${config.border} flex items-center justify-center`}>
             <span className={`text-2xl font-bold ${config.text}`}>
-              {assessment.riskLevel === 'low' ? 'L' : assessment.riskLevel === 'medium' ? 'M' : 'H'}
+              {assessment.riskLevel === 'low' ? 'L' : assessment.riskLevel === 'medium' ? 'M' : assessment.riskLevel === 'critical' ? 'C' : 'H'}
             </span>
           </div>
           <div>
@@ -899,7 +975,7 @@ function ScoringTab({ caseData }: { caseData: Case }) {
           <div className="text-right text-sm opacity-70">
             <p>Уровень риска</p>
             <p className="text-lg font-semibold capitalize mt-0.5">
-              {caseData.riskLevel === 'high' ? 'Высокий' : caseData.riskLevel === 'medium' ? 'Средний' : 'Низкий'}
+              {caseData.riskLevel === 'critical' ? 'Критический' : caseData.riskLevel === 'high' ? 'Высокий' : caseData.riskLevel === 'medium' ? 'Средний' : 'Низкий'}
             </p>
           </div>
         </div>
@@ -1578,14 +1654,14 @@ function buildDataCoverage(caseData: Case) {
       provider: 'Adata',
       available: !!e?.courts,
       detail: e?.courts ? `${e.courts.activeCases} активных` : undefined,
-      endpoint: '/company/courtcase',
+      endpoint: '/courtcase',
     },
     {
       label: 'Суды (персональные)',
       provider: 'Adata',
       available: individualCourtCount > 0,
       detail: individualCourtCount > 0 ? `${individualCourtCount} дел` : undefined,
-      endpoint: '/individual/info',
+      endpoint: '/individual/court-case/details',
     },
     {
       label: 'Бенефициары (UBO)',
@@ -1629,7 +1705,8 @@ function buildDataCoverage(caseData: Case) {
     {
       label: 'Полный ИИ-отчёт',
       provider: 'ИИ',
-      available: !!(caseData as unknown as Record<string, unknown>).fullReport ||
+      available:
+        !!caseData.hasFullReport ||
         caseData.verificationLog?.some((ev) => ev.action === 'full_report:saved'),
       detail: undefined,
       endpoint: 'OpenAI / Шаблон',
@@ -1894,13 +1971,14 @@ export function CaseDetail({ caseId }: { caseId: string }) {
     { id: 'chat', label: 'Чат с ИИ', icon: MessageSquare },
   ]
 
-  const riskConfig = {
+  const riskConfig: Record<string, { bg: string; text: string; dot: string }> = {
     low: { bg: 'bg-emerald-100', text: 'text-emerald-700', dot: 'bg-emerald-500' },
     medium: { bg: 'bg-amber-100', text: 'text-amber-700', dot: 'bg-amber-500' },
     high: { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
+    critical: { bg: 'bg-red-200', text: 'text-red-900', dot: 'bg-red-700' },
   }
 
-  const risk = caseData.riskLevel ? riskConfig[caseData.riskLevel] : null
+  const risk = caseData.riskLevel ? (riskConfig[caseData.riskLevel] ?? riskConfig.high) : null
   const displayName = caseDisplayName(caseData)
 
   const handleDownloadReport = async () => {
@@ -1926,7 +2004,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
               {risk && (
                 <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${risk.bg} ${risk.text}`}>
                   <span className={`w-2 h-2 rounded-full ${risk.dot}`} />
-                  {caseData.riskLevel === 'low' ? 'Низкий риск' : caseData.riskLevel === 'medium' ? 'Средний риск' : 'Высокий риск'}
+                  {caseData.riskLevel === 'critical' ? 'Критический риск' : caseData.riskLevel === 'high' ? 'Высокий риск' : caseData.riskLevel === 'medium' ? 'Средний риск' : 'Низкий риск'}
                 </span>
               )}
               {caseData.totalScore !== null && caseData.totalScore !== undefined && (
@@ -1963,10 +2041,19 @@ export function CaseDetail({ caseId }: { caseId: string }) {
           <div className="flex items-center gap-2 shrink-0">
             <Link
               href={`/cases/${caseData.id}/full-report`}
-              className="flex items-center gap-2 px-4 py-2.5 bg-red-50 hover:bg-red-100 text-red-800 border border-red-200 text-sm font-medium rounded-lg transition-colors"
+              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg transition-colors border ${
+                caseData.fullReportStale
+                  ? 'bg-amber-50 hover:bg-amber-100 text-amber-950 border-amber-300'
+                  : 'bg-red-50 hover:bg-red-100 text-red-800 border-red-200'
+              }`}
             >
               <FileText className="w-4 h-4" />
               Полный отчёт
+              {caseData.fullReportStale && (
+                <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-200 text-amber-900">
+                  граф обновлён
+                </span>
+              )}
             </Link>
             <Link
               href={`/cases/${caseData.id}/report`}

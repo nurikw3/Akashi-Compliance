@@ -189,7 +189,29 @@ export interface Case {
   beneficiary?: Record<string, unknown>[]
   individualCourts?: Record<string, IndividualCourtCase[]>
   individualCourtsMeta?: Record<string, IndividualCourtsMeta>
+  companyCourtCases?: IndividualCourtCase[]
   verificationLog?: VerificationLogEvent[]
+  hasFullReport?: boolean
+  fullReportGeneratedAt?: string | null
+  fullReportStatus?: 'generating' | null
+  fullReportStale?: boolean
+  fullReportStaleReason?: string | null
+  fullReportStaleMessage?: string | null
+  graphBuiltAt?: string | null
+  fullReportContextEstimate?: FullReportContextEstimate | null
+}
+
+export interface FullReportContextEstimate {
+  model: string
+  contextWindowTokens: number
+  sectionCalls: number
+  approxTotalInputTokens: number
+  headroomTokens: number
+  note: string
+  sections: Record<
+    string,
+    { chars: number; capChars: number; approxTokens: number }
+  >
 }
 
 export interface EnrichmentData {

@@ -94,10 +94,10 @@ _SECTION_PROMPTS: dict[str, str] = {
 }
 
 _SECTION_MAX_CHARS: dict[str, int] = {
-    "sanctions": 8000,
-    "courts": 10000,
-    "structure": 8000,
-    "summary": 6000,
+    "sanctions": 12_000,
+    "courts": 16_000,
+    "structure": 24_000,
+    "summary": 8_000,
 }
 
 
@@ -137,6 +137,7 @@ def _list_data_sources(enriched: dict[str, Any]) -> list[str]:
         ("directorProfile", "Adata профиль директора (ИИН)"),
         ("affiliateProfiles", "Adata данные аффилиатов L1"),
         ("individualCourts", "Adata персональные судебные дела (ИИН)"),
+        ("companyCourtCases", "Adata судебные дела компании (детально)"),
         ("scoreBreakdown", "Скоринг (7 метрик)"),
         ("assessment", "Оценка риска (assessment)"),
     ]
@@ -578,6 +579,28 @@ def _collect_court_rows(row: dict[str, Any]) -> list[dict[str, Any]]:
             "is_unresolved": _is_unresolved_case(case),
         }
         rows.append(row_item)
+
+    company_detailed = enriched.get("companyCourtCases")
+    if isinstance(company_detailed, list):
+        for case in company_detailed:
+            if not isinstance(case, dict):
+                continue
+            category = case.get("category") or case.get("type") or "—"
+            case_role = _normalize_case_role(case.get("role"))
+            rows.append(
+                {
+                    "person_entity": _short_text(company_name, max_len=46),
+                    "role_in_case": case_role,
+                    "category": _short_text(category, max_len=70),
+                    "result": _short_text(case.get("result") or case.get("status"), max_len=48),
+                    "date": _short_text(case.get("date"), max_len=24),
+                    "source_links": _count_case_source_links(case),
+                    "is_top_officer": False,
+                    "is_defendant": case_role == "Ответчик",
+                    "is_serious": _is_serious_court_category(str(category)),
+                    "is_unresolved": _is_unresolved_case(case),
+                }
+            )
 
     meta = enriched.get("individualCourtsMeta")
     individual_meta = meta if isinstance(meta, dict) else {}
@@ -1109,7 +1132,7 @@ async def _call_llm_section(
             },
         ],
         temperature=0.2,
-        max_tokens=1200 if section == "summary" else 1500,
+        max_tokens=2500 if section == "summary" else 2000,
     )
     content = response.choices[0].message.content or ""
     return _normalize_section_output(section, content) if section != "summary" else _sanitize_llm_text(content)
@@ -1662,6 +1685,20 @@ async def generate_full_report(case_id: str) -> str:
     if row is None:
         raise ValueError(f"Case {case_id} not found")
 
+    try:
+        return await _generate_full_report_impl(case_id, row)
+    except Exception:
+        fresh_row = db.get_case(case_id)
+        if fresh_row is not None:
+            stale = fresh_row.get("enriched_data") or {}
+            if isinstance(stale, dict) and stale.get("fullReportStatus") == "generating":
+                stale = dict(stale)
+                stale.pop("fullReportStatus", None)
+                db.update_case(case_id, enriched_data=stale)
+        raise
+
+
+async def _generate_full_report_impl(case_id: str, row: dict[str, Any]) -> str:
     company_name = row.get("company_name", MISSING)
     enriched = row.get("enriched_data") or {}
     sources_list = _list_data_sources(enriched)
@@ -1822,6 +1859,10 @@ async def generate_full_report(case_id: str) -> str:
 
     save_enriched["fullReport"] = report
     save_enriched["fullReportGeneratedAt"] = datetime.now(timezone.utc).isoformat()
+    tree_meta = save_enriched.get("affiliateTree") or {}
+    if isinstance(tree_meta, dict) and tree_meta.get("builtAt"):
+        save_enriched["fullReportTreeBuiltAt"] = tree_meta["builtAt"]
+    save_enriched.pop("fullReportStatus", None)
     db.update_case(case_id, enriched_data=save_enriched)
 
     logger.info("Full report saved for case %s", case_id)

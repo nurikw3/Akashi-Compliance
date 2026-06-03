@@ -133,6 +133,41 @@ def _litigation_totals(block: dict[str, Any]) -> int:
     )
 
 
+def _courtcase_data_from_raw(raw: dict[str, Any] | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    payload = raw.get("courtcase")
+    if not isinstance(payload, dict):
+        return {}
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return data
+    if payload.get("error"):
+        return {}
+    return payload
+
+
+def _apply_bin_courtcase_from_raw(
+    info_data: dict[str, Any],
+    raw: dict[str, Any] | None,
+    lit_data: dict[str, Any],
+    courts_scope: str,
+    courts_note: str | None,
+) -> tuple[dict[str, Any], str, str | None]:
+    """Prefer dedicated ``/api/courtcase`` BIN data over empty litigation or director head counts."""
+    cc_data = _courtcase_data_from_raw(raw)
+    if not cc_data or _litigation_totals(cc_data) == 0:
+        return lit_data, courts_scope, courts_note
+
+    company_lit = info_data.get("litigation")
+    if not isinstance(company_lit, dict):
+        company_lit = {}
+    if _litigation_totals(company_lit) > 0:
+        return lit_data, courts_scope, courts_note
+
+    return cc_data, "company", None
+
+
 def _litigation_block(info_data: dict[str, Any]) -> tuple[dict[str, Any], str, str | None]:
     company_lit = info_data.get("litigation")
     if not isinstance(company_lit, dict):
@@ -494,8 +529,13 @@ def map_info_data(
     risk_flags = _collect_risk_flags(risk)
 
     lit_data, courts_scope, courts_note = _litigation_block(info_data)
+    lit_data, courts_scope, courts_note = _apply_bin_courtcase_from_raw(
+        info_data, raw, lit_data, courts_scope, courts_note
+    )
     court_active, court_years, court_totals, court_ui = _parse_courtcase_data(lit_data)
     has_courts = (court_active is not None and court_active > 0) or bool(court_years)
+    if has_courts and courts_scope == "company":
+        courts_note = None
 
     related, founders_aff = _parse_affiliates(diagram, main_iin=iin)
     founders_list = _founders_from_block(founders_block) or founders_aff
@@ -517,7 +557,9 @@ def map_info_data(
     section_sources = {
         "companyInfo": "adata" if has_company else "none",
         "taxes": "adata" if has_tax else "none",
-        "courts": "adata" if has_courts or lit_data else "none",
+        "courts": "adata"
+        if has_courts or lit_data or _litigation_totals(_courtcase_data_from_raw(raw)) > 0
+        else "none",
         "sanctions": "adata" if risk is not None else "none",
         "affiliates": "adata" if has_affiliates else "none",
         "graph": "adata" if has_affiliates else "none",

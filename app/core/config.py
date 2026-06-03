@@ -24,6 +24,21 @@ def normalize_adata_base_url(url: str) -> str:
     return normalized
 
 
+def normalize_adata_courtcase_base_url(company_base_url: str) -> str:
+    """Derive Adata company *courtcase* API base from the company base URL."""
+    normalized = (company_base_url or "").strip().rstrip("/")
+    if not normalized:
+        return "https://api.adata.kz/api/courtcase"
+    if normalized.endswith("/company"):
+        return f"{normalized[: -len('/company')]}/courtcase"
+    if normalized.endswith("/courtcase"):
+        return normalized
+    if "/api/courtcase" in normalized:
+        idx = normalized.index("/api/courtcase")
+        return normalized[: idx + len("/api/courtcase")]
+    return "https://api.adata.kz/api/courtcase"
+
+
 def normalize_adata_individual_base_url(company_base_url: str) -> str:
     """Derive Adata *individual* API base from the company base URL."""
     normalized = (company_base_url or "").strip().rstrip("/")

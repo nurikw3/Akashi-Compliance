@@ -9,6 +9,7 @@ from app.models import db
 from app.services.adata.client import (
     deep_find,
     fetch_beneficiary,
+    fetch_company_court_cases,
     fetch_company_info,
     fetch_director_iin,
     fetch_individual_court_cases,
@@ -544,6 +545,10 @@ async def process_case(case_id: str) -> None:
             case_id=case_id,
         )
 
+        company_court_cases = await fetch_company_court_cases(
+            main_bin, case_id=case_id
+        )
+
         total_individual_cases = sum(len(v) for v in individual_courts.values() if isinstance(v, list))
         existing = add_event_to_enriched(
             existing,
@@ -551,6 +556,28 @@ async def process_case(case_id: str) -> None:
             action="individual_courts:summary",
             outcome={"status": "ok", "counts": {"iinChecked": len(individual_courts), "cases": total_individual_cases}},
         )
+        if company_court_cases:
+            existing = add_event_to_enriched(
+                existing,
+                provider="Adata",
+                action="company_courts:summary",
+                subject={"type": "BIN", "value": iin},
+                outcome={
+                    "status": "ok",
+                    "counts": {
+                        "cases": len(company_court_cases),
+                        "docs": sum(
+                            len(c.get("documents") or [])
+                            + sum(
+                                len(h.get("documents") or [])
+                                for h in (c.get("history") or [])
+                                if isinstance(h, dict)
+                            )
+                            for c in company_court_cases
+                        ),
+                    },
+                },
+            )
 
         if not unique_targets:
             nr_count = len((non_residents if isinstance(non_residents, dict) else {}).get("data") or [])
@@ -631,6 +658,7 @@ async def process_case(case_id: str) -> None:
                 "affiliateProfiles": affiliate_profiles,
                 "individualCourts": individual_courts,
                 "individualCourtsMeta": individual_courts_meta,
+                "companyCourtCases": company_court_cases,
             },
             sources=sources,
             conclusion="",

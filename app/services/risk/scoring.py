@@ -1,19 +1,69 @@
-"""Unified risk scoring engine.
+"""Unified risk scoring engine (0–100).
 
-Produces a 0–100 score from 7 weighted metrics sourced from Adata enrichment
-and LSEG World-Check One data.
+Produces a compliance risk score from Adata enrichment, LSEG World-Check One,
+and affiliate tree data.  Each metric maps to a real compliance concern and
+carries a weight proportional to its regulatory significance.
 
-Metric weights (total = 100):
-  1. International sanctions  — 35 pts  (LSEG WC1; Adata — только КЗ санкц./крит.)
-  2. Court activity           — 20 pts  (Adata courts + LLM severity)
-  3. Tax compliance           — 15 pts  (Adata taxes + налоговый риск Adata)
-  4. Legal status             — 15 pts  (Adata operatingStatus + status flags)
-  5. PEP screening            —  5 pts  (LSEG individuals)
-  6. Adverse media            —  5 pts  (LSEG Media-Check)
-  7. Affiliate risk           —  5 pts  (affiliate tree)
+Metric weights (total = 100)
+────────────────────────────
+  1. International sanctions   — 30 pts
+     Source: LSEG WC1 (primary) / Adata (fallback КЗ-списки).
+     Formal sanctions ↝ 30.  Material match (strong/exact ≥85) ↝ 18.
+     KZ-only flags (терроризм, лжепредприятие) ↝ 15–30.
+     Rationale: sanctions are the single strongest kill-deal signal per
+     FATF/AML/CFT and Kazakhstan's FinMonitoring requirements.
+
+  2. Court activity            — 20 pts
+     Source: Adata enrichment.courts (company) + companyCourtCases/
+     individualCourts (detailed).
+     Criminal case ↝ 20.  Defendant in civil ↝ 10–16.  Third-party ↝ 2–6.
+     Scales with active count.  LLM aiAnalysis.category used when available.
+     Rationale: litigation is a core due-diligence signal; defendant status
+     and criminal charges carry the highest weight.
+
+  3. Tax compliance            — 15 pts
+     Source: Adata taxes.debt, taxes.status, riskFactor (tax_risk_degree).
+     Logarithmic scale: debt 50K→2, 500K→5, 1M→8, 5M→12, 10M+→15.
+     tax_risk_degree from Adata adds up to 4 additional points (capped at 15).
+     Rationale: tax arrears correlate with financial distress and regulatory
+     enforcement; log-scale prevents small debts from over-scoring.
+
+  4. PEP exposure              — 10 pts
+     Source: LSEG PEP screening (individuals linked to entity).
+     Any PEP hit ↝ 10.  No LSEG → 0 (cannot penalize without data).
+     Rationale: PEP relationships trigger enhanced due diligence under FATF
+     Recommendation 12 and KZ AML law (Article 5); previously under-weighted.
+
+  5. Legal status              — 10 pts
+     Source: Adata operatingStatus + statusFlags.
+     Liquidated ↝ 10.  Suspended ↝ 6.  Financial-problem flags ↝ 3.5.
+     Rationale: an inactive or bankrupt counterparty cannot fulfill obligations;
+     weight reduced vs. prior version because liquidation is a blocker, not a
+     graduated risk — the score signals "verify before proceeding".
+
+  6. Adverse media             —  5 pts
+     Source: LSEG Media-Check (negativeCount).
+     ≥3 negative mentions ↝ 5.  Linear below 3.
+     Rationale: media sentiment is a soft signal; confirms or amplifies other
+     red flags rather than standing alone.
+
+  7. Affiliate risk            — 10 pts
+     Source: affiliate tree node risk levels + enriched affiliate profiles.
+     High-risk affiliate ↝ 10.  Sanctioned affiliate (LSEG extended) ↝ 10.
+     Many affiliates (>10) without high risk ↝ 3.
+     Rationale: contagion risk from related entities is a key AML concern;
+     previously under-weighted at 5 pts.
+
+Risk levels:
+  0–19   low       — standard procedure
+  20–34  medium    — enhanced due diligence recommended
+  35–49  high      — escalate to compliance committee
+  50–100 critical  — likely deal-breaker; formal review required
+  LSEG formal-sanction override → force "high" minimum.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -67,8 +117,16 @@ def _tax_risk_degree_flags(enrichment: dict[str, Any]) -> list[str]:
     ]
 
 
+def _log_debt_score(debt: float, max_pts: float) -> float:
+    """Logarithmic mapping: 50K→2, 500K→5, 1M→8, 5M→12, 10M+→15."""
+    if debt <= 0:
+        return 0.0
+    raw = max_pts * math.log10(max(debt, 1)) / math.log10(15_000_000)
+    return min(max_pts, max(0, round(raw, 1)))
+
+
 class RiskScorer:
-    """Calculate risk score from enriched_data (Adata) + optional lseg section."""
+    """Calculate 0-100 risk score from enriched_data + optional LSEG + tree."""
 
     @staticmethod
     def _lseg_requires_high_risk(lseg: dict[str, Any]) -> bool:
@@ -99,24 +157,26 @@ class RiskScorer:
             self._metric_sanctions(enrichment, lseg),
             self._metric_courts(enrichment),
             self._metric_taxes(enrichment),
-            self._metric_legal_status(enrichment),
             self._metric_pep(lseg),
+            self._metric_legal_status(enrichment),
             self._metric_adverse_media(lseg),
             self._metric_affiliate_risk(enrichment, affiliate_tree),
         ]
 
-        total = sum(m.points for m in breakdown)
-        total = min(100.0, total)
+        total = min(100.0, sum(m.points for m in breakdown))
 
-        if total >= 67:
+        if total >= 50:
+            risk_level = "critical"
+        elif total >= 35:
             risk_level = "high"
-        elif total >= 34:
+        elif total >= 20:
             risk_level = "medium"
         else:
             risk_level = "low"
 
         if lseg and self._lseg_requires_high_risk(lseg):
-            risk_level = "high"
+            if risk_level in ("low", "medium"):
+                risk_level = "high"
 
         return ScoringResult(
             total_score=round(total, 1),
@@ -124,10 +184,12 @@ class RiskScorer:
             breakdown=breakdown,
         )
 
+    # ── 1. Sanctions (30 pts) ────────────────────────────────────────────
+
     def _metric_sanctions(
         self, enrichment: dict[str, Any], lseg: dict[str, Any] | None
     ) -> MetricResult:
-        max_pts = 35.0
+        max_pts = 30.0
 
         if lseg and lseg.get("screenedAt"):
             san = lseg.get("sanctions") or {}
@@ -173,14 +235,13 @@ class RiskScorer:
                 if not h.get("isSanction") and not h.get("isMaterialMatch")
             ]
             if weak_hits:
-                weak = len(weak_hits)
                 return MetricResult(
                     metric="sanctions",
                     points=0,
                     max_points=max_pts,
                     reason=(
-                        f"LSEG WC1: санкций нет; {weak} слабых совпадений по названию "
-                        f"(см. вкладку LSEG, не влияют на балл)"
+                        f"LSEG WC1: санкций нет; {len(weak_hits)} слабых совпадений "
+                        f"(не влияют на балл)"
                     ),
                     source="lseg",
                 )
@@ -232,6 +293,8 @@ class RiskScorer:
             source="adata",
         )
 
+    # ── 2. Courts (20 pts) ───────────────────────────────────────────────
+
     def _metric_courts(self, enrichment: dict[str, Any]) -> MetricResult:
         max_pts = 20.0
         courts = enrichment.get("courts") or {}
@@ -249,6 +312,7 @@ class RiskScorer:
             )
 
         cases_list: list[dict] = courts.get("cases") or []
+
         has_criminal = any(
             (c.get("aiAnalysis") or {}).get("category") == "criminal"
             for c in cases_list
@@ -257,61 +321,64 @@ class RiskScorer:
             (c.get("aiAnalysis") or {}).get("category") == "enforcement"
             for c in cases_list
         )
+        defendant_count = sum(
+            1 for c in cases_list
+            if str(c.get("role") or "").lower() in ("ответчик", "defendant")
+        )
 
         if has_criminal:
             pts = max_pts
+            detail = "уголовные дела"
+        elif defendant_count >= 3:
+            pts = max_pts * 0.8
+            detail = f"ответчик в {defendant_count} делах"
         elif active > 5:
-            pts = max_pts * 0.85
-        elif has_enforcement:
             pts = max_pts * 0.75
-        elif active > 1:
+            detail = f"много дел ({active})"
+        elif has_enforcement:
+            pts = max_pts * 0.65
+            detail = "исполнительное производство"
+        elif defendant_count >= 1:
             pts = max_pts * 0.5
+            detail = f"ответчик в {defendant_count} деле(ах)"
+        elif active > 1:
+            pts = max_pts * 0.3
+            detail = f"третья сторона / истец, {active} дел"
         else:
-            pts = max_pts * 0.25
+            pts = max_pts * 0.15
+            detail = "третья сторона / истец, 1 дело"
 
         scope_hint = f", объект: {scope}" if scope != "company" else ""
         note_hint = f". {note}" if note else ""
         return MetricResult(
             metric="courts",
-            points=pts,
+            points=round(pts, 1),
             max_points=max_pts,
-            reason=f"Активных дел: {active}{scope_hint}"
-            + (" (есть уголовные)" if has_criminal else "")
-            + note_hint,
+            reason=f"Активных дел: {active} ({detail}{scope_hint}){note_hint}",
             source="adata",
         )
+
+    # ── 3. Taxes (15 pts) ────────────────────────────────────────────────
 
     def _metric_taxes(self, enrichment: dict[str, Any]) -> MetricResult:
         max_pts = 15.0
         taxes = enrichment.get("taxes") or {}
         debt = float(taxes.get("debt") or 0)
-        status = (taxes.get("status") or "clean").lower()
         tax_risk_flags = _tax_risk_degree_flags(enrichment)
 
-        pts = 0.0
-        parts: list[str] = []
+        debt_pts = _log_debt_score(debt, max_pts)
 
-        if debt > 0:
-            if status == "critical" or debt >= 10_000_000:
-                pts = max(pts, max_pts)
-                parts.append(f"задолженность {debt:,.0f} тг (критическая)".replace(",", " "))
-            elif debt >= 1_000_000:
-                pts = max(pts, max_pts * 0.7)
-                parts.append(f"задолженность {debt:,.0f} тг".replace(",", " "))
-            else:
-                pts = max(pts, max_pts * 0.3)
-                parts.append(f"задолженность {debt:,.0f} тг".replace(",", " "))
-
+        degree_pts = 0.0
         if tax_risk_flags:
-            degree_text = tax_risk_flags[0]
-            lowered = degree_text.lower()
+            lowered = tax_risk_flags[0].lower()
             if "высок" in lowered or "high" in lowered:
-                pts = max(pts, max_pts * 0.55)
+                degree_pts = 4.0
             elif "средн" in lowered or "medium" in lowered:
-                pts = max(pts, max_pts * 0.25)
+                degree_pts = 2.0
             elif "низк" in lowered or "low" in lowered:
-                pts = max(pts, max_pts * 0.1)
-            parts.append(degree_text)
+                degree_pts = 0.5
+
+        pts = min(max_pts, debt_pts + degree_pts)
 
         if pts == 0:
             return MetricResult(
@@ -322,16 +389,61 @@ class RiskScorer:
                 source="adata",
             )
 
+        parts: list[str] = []
+        if debt > 0:
+            parts.append(f"задолженность {debt:,.0f} тг ({debt_pts:.0f} б.)".replace(",", " "))
+        if tax_risk_flags:
+            parts.append(f"{tax_risk_flags[0]} (+{degree_pts:.0f} б.)")
+
         return MetricResult(
             metric="taxes",
-            points=min(max_pts, round(pts, 1)),
+            points=round(pts, 1),
             max_points=max_pts,
             reason="; ".join(parts),
             source="adata",
         )
 
+    # ── 4. PEP exposure (10 pts) ─────────────────────────────────────────
+
+    def _metric_pep(self, lseg: dict[str, Any] | None) -> MetricResult:
+        max_pts = 10.0
+        if not lseg:
+            return MetricResult(
+                metric="pep",
+                points=0,
+                max_points=max_pts,
+                reason="LSEG не подключён — PEP-скрининг не выполнен",
+                source="none",
+            )
+
+        pep = lseg.get("pep") or {}
+        if pep.get("isHit"):
+            individuals = pep.get("individuals") or []
+            names = [
+                i.get("primaryName", "")
+                for i in individuals[:2]
+                if i.get("primaryName")
+            ]
+            return MetricResult(
+                metric="pep",
+                points=max_pts,
+                max_points=max_pts,
+                reason=f"PEP совпадение (руководство): {', '.join(names) or 'физлицо'}",
+                source="lseg",
+            )
+
+        return MetricResult(
+            metric="pep",
+            points=0,
+            max_points=max_pts,
+            reason="PEP-совпадений по руководителю не обнаружено",
+            source="lseg",
+        )
+
+    # ── 5. Legal status (10 pts) ─────────────────────────────────────────
+
     def _metric_legal_status(self, enrichment: dict[str, Any]) -> MetricResult:
-        max_pts = 15.0
+        max_pts = 10.0
         info = enrichment.get("companyInfo") or {}
         status = (info.get("operatingStatus") or "").lower()
         status_flags: list[str] = enrichment.get("statusFlags") or []
@@ -386,40 +498,7 @@ class RiskScorer:
             source="adata",
         )
 
-    def _metric_pep(self, lseg: dict[str, Any] | None) -> MetricResult:
-        max_pts = 5.0
-        if not lseg:
-            return MetricResult(
-                metric="pep",
-                points=0,
-                max_points=max_pts,
-                reason="LSEG не подключён — PEP-скрининг не выполнен",
-                source="none",
-            )
-
-        pep = lseg.get("pep") or {}
-        if pep.get("isHit"):
-            individuals = pep.get("individuals") or []
-            names = [
-                i.get("primaryName", "")
-                for i in individuals[:2]
-                if i.get("primaryName")
-            ]
-            return MetricResult(
-                metric="pep",
-                points=max_pts,
-                max_points=max_pts,
-                reason=f"PEP совпадение (руководство): {', '.join(names) or 'физлицо'}",
-                source="lseg",
-            )
-
-        return MetricResult(
-            metric="pep",
-            points=0,
-            max_points=max_pts,
-            reason="PEP-совпадений по руководителю не обнаружено",
-            source="lseg",
-        )
+    # ── 6. Adverse media (5 pts) ─────────────────────────────────────────
 
     def _metric_adverse_media(self, lseg: dict[str, Any] | None) -> MetricResult:
         max_pts = 5.0
@@ -453,23 +532,40 @@ class RiskScorer:
             source="lseg",
         )
 
+    # ── 7. Affiliate risk (10 pts) ───────────────────────────────────────
+
     def _metric_affiliate_risk(
         self,
         enrichment: dict[str, Any],
         affiliate_tree: dict[str, Any] | None,
     ) -> MetricResult:
-        max_pts = 5.0
+        max_pts = 10.0
 
         if affiliate_tree:
             nodes: list[dict] = affiliate_tree.get("nodes") or []
             high_risk_nodes = [
                 n for n in nodes if n.get("riskLevel") == "high" and not n.get("main")
             ]
-            if high_risk_nodes:
-                names = [n.get("label", "") for n in high_risk_nodes[:2]]
+            sanctioned_nodes = [
+                n for n in nodes if n.get("isSanctioned") and not n.get("main")
+            ]
+
+            if sanctioned_nodes:
+                names = [n.get("label", "") for n in sanctioned_nodes[:2]]
                 return MetricResult(
                     metric="affiliate_risk",
                     points=max_pts,
+                    max_points=max_pts,
+                    reason=f"Санкционный аффилиат: {', '.join(names)}",
+                    source="affiliate_tree",
+                )
+
+            if high_risk_nodes:
+                names = [n.get("label", "") for n in high_risk_nodes[:2]]
+                pts = max_pts if len(high_risk_nodes) >= 2 else max_pts * 0.7
+                return MetricResult(
+                    metric="affiliate_risk",
+                    points=pts,
                     max_points=max_pts,
                     reason=f"Аффилиат с высоким риском: {', '.join(names)}",
                     source="affiliate_tree",
@@ -480,7 +576,7 @@ class RiskScorer:
         if len(companies) > 10:
             return MetricResult(
                 metric="affiliate_risk",
-                points=max_pts * 0.4,
+                points=max_pts * 0.3,
                 max_points=max_pts,
                 reason=f"Расширенная сеть связей: {len(companies)} аффилиатов",
                 source="adata",

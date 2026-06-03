@@ -61,6 +61,8 @@ def _repair_stale_director(enrichment: dict[str, Any] | None) -> dict[str, Any] 
 
 
 def case_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    from app.services.ai.full_report_meta import full_report_meta_for_row
+
     enriched = row.get("enriched_data") or {}
     enrichment = _repair_stale_director(enriched.get("enrichment"))
     assessment = enriched.get("assessment")
@@ -110,5 +112,10 @@ def case_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "affiliateProfiles": enriched.get("affiliateProfiles"),
         "individualCourts": enriched.get("individualCourts"),
         "individualCourtsMeta": enriched.get("individualCourtsMeta"),
+        "companyCourtCases": enriched.get("companyCourtCases"),
         "verificationLog": enriched.get("verificationLog") or [],
+        "hasFullReport": bool(enriched.get("fullReport")),
+        "fullReportGeneratedAt": enriched.get("fullReportGeneratedAt"),
+        "fullReportStatus": enriched.get("fullReportStatus"),
+        **full_report_meta_for_row(row),
     }

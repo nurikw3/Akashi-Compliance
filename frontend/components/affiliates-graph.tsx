@@ -55,7 +55,7 @@ interface GraphNode {
   hasReport?: boolean
   probeError?: string
   level?: number
-  riskLevel?: 'low' | 'medium' | 'high' | null
+  riskLevel?: 'low' | 'medium' | 'high' | 'critical' | null
   isPep?: boolean
   isBeneficiary?: boolean
   isSanctioned?: boolean
@@ -247,6 +247,7 @@ function riskDotColor(risk?: GraphNode['riskLevel']): string | null {
   if (risk === 'low') return 'bg-emerald-500'
   if (risk === 'medium') return 'bg-amber-400'
   if (risk === 'high') return 'bg-red-500'
+  if (risk === 'critical') return 'bg-red-700'
   return null
 }
 
@@ -342,8 +343,11 @@ function AffiliateFlowNode({ data }: NodeProps<Node<AffiliateNodeData>>) {
   }
 
   const canOpenDetails =
-    !isMain &&
-    (isForeign || isCompanyBin(data.iinBin) || data.type === 'person' || Boolean(data.hasReport))
+    isMain ||
+    isForeign ||
+    isCompanyBin(data.iinBin) ||
+    data.type === 'person' ||
+    Boolean(data.hasReport)
 
   return (
     <>
@@ -657,7 +661,7 @@ function NodePopup({ node, position, onClose, onViewFull, onCheckLseg }: NodePop
           <p className="font-mono text-sm text-neutral-900">{node.iinBin}</p>
         )}
       </div>
-      {node.type !== 'main' && (
+      {(node.type === 'main' ? canLookup : node.type !== 'main') && (
         <div className="px-4 pb-4">
           <button
             onClick={handlePrimaryAction}
@@ -665,7 +669,7 @@ function NodePopup({ node, position, onClose, onViewFull, onCheckLseg }: NodePop
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-neutral-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg"
           >
             <ExternalLink className="w-4 h-4" />
-            {primaryLabel}
+            {node.type === 'main' ? 'Полное заключение' : primaryLabel}
           </button>
           {canLookup && !node.hasReport && !isForeign && (
             <p className="text-xs text-neutral-400 mt-2 text-center">

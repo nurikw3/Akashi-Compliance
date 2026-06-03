@@ -19,7 +19,11 @@ from typing import Any
 
 import httpx
 
-from app.core.config import normalize_adata_individual_base_url, settings
+from app.core.config import (
+    normalize_adata_courtcase_base_url,
+    normalize_adata_individual_base_url,
+    settings,
+)
 from app.services.cache import ADATA_TTL, DIRECTOR_IIN_TTL, adata_key, get_cached, set_cached
 from app.services.verification_log import append_case_event
 
@@ -105,6 +109,11 @@ def _token_path(suffix: str) -> str:
     return f"{base}/{suffix}/{settings.adata_token}"
 
 
+def _courtcase_token_path() -> str:
+    base = normalize_adata_courtcase_base_url(settings.adata_base_url)
+    return f"{base}/{settings.adata_token}"
+
+
 def deep_find(value: Any, keys: frozenset[str] | set[str]) -> Any:
     """Return the first non-empty value for any key in ``keys`` (case-insensitive)."""
     if isinstance(value, dict):
@@ -126,6 +135,67 @@ def deep_find(value: Any, keys: frozenset[str] | set[str]) -> Any:
 
 def info_has(value: Any, keys: frozenset[str] | set[str]) -> bool:
     return deep_find(value, keys) is not None
+
+
+def _is_aggregate_court_year_row(row: dict[str, Any]) -> bool:
+    """Yearly litigation summary row (not a single court case)."""
+    if row.get("year") and any(
+        row.get(k) is not None for k in ("civil_count", "criminal_count", "administrative_count")
+    ):
+        return True
+    return False
+
+
+def _is_detailed_court_case_row(row: dict[str, Any]) -> bool:
+    """Single court case with number, parties, documents, or history."""
+    if _is_aggregate_court_year_row(row):
+        return False
+    if row.get("number"):
+        return True
+    if row.get("court") or row.get("category") or row.get("documents") or row.get("history"):
+        return True
+    return False
+
+
+def _court_cases_last_page(data: dict[str, Any]) -> int:
+    last_page = (
+        data.get("last_page")
+        or data.get("lastPage")
+        or data.get("total_pages")
+        or data.get("totalPages")
+    )
+    try:
+        return max(1, int(last_page)) if last_page is not None else 1
+    except (TypeError, ValueError):
+        return 1
+
+
+async def _merge_company_info_court_pages(
+    client: httpx.AsyncClient,
+    job_token: str,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge paginated ``court_cases`` from company info/check when present."""
+    raw_cases = data.get("court_cases")
+    if not isinstance(raw_cases, list) or not raw_cases:
+        return data
+    if not any(_is_detailed_court_case_row(r) for r in raw_cases if isinstance(r, dict)):
+        return data
+
+    pages_total = _court_cases_last_page(data)
+    if pages_total <= 1:
+        return data
+
+    check_url = _check_url()
+    merged: list[Any] = list(raw_cases)
+    for page in range(2, pages_total + 1):
+        response = await client.get(check_url, params={"token": job_token, "page": page})
+        response.raise_for_status()
+        page_data = response.json().get("data")
+        if isinstance(page_data, dict):
+            merged.extend(page_data.get("court_cases") or [])
+
+    return {**data, "court_cases": merged}
 
 
 async def _poll(
@@ -204,6 +274,7 @@ async def fetch_company_info(bin_value: str, *, case_id: str | None = None) -> d
         data = result.get("data")
         if not isinstance(data, dict):
             raise AdataError("Company info poll returned no data")
+        data = await _merge_company_info_court_pages(client, payload["token"], data)
         await set_cached(cache_key, data, ADATA_TTL)
         if case_id:
             append_case_event(
@@ -237,20 +308,13 @@ def _fallbacks_for_info(info_data: dict[str, Any]) -> list[str]:
             for k in ("affiliation_by_company", "affiliation_by_head", "affiliation_by_founder")
         ):
             needed.append("relation")
+        from app.services.adata.info_mapper import _litigation_totals
+
         lit = info_data.get("litigation") or {}
         risk = info_data.get("riskFactor") or {}
         head_lit = (risk.get("head") or {}).get("litigation") if isinstance(risk, dict) else {}
-        if not lit.get("court_cases") and not (head_lit or {}).get("court_cases"):
-            if not any(
-                int((lit or {}).get(k) or 0)
-                + int((head_lit or {}).get(k) or 0)
-                for k in (
-                    "total_civil_count",
-                    "total_criminal_count",
-                    "total_administrative_count",
-                )
-            ):
-                needed.append("courtcase")
+        if _litigation_totals(lit) + _litigation_totals(head_lit) == 0:
+            needed.append("courtcase")
         return needed
 
     needed = []
@@ -280,7 +344,13 @@ async def get_sanctions(client: httpx.AsyncClient, bin_value: str) -> dict[str, 
 
 
 async def get_courtcase(client: httpx.AsyncClient, bin_value: str) -> dict[str, Any]:
-    return await _get_endpoint(client, "courtcase", bin_value)
+    url = _courtcase_token_path()
+    response = await client.get(url, params={"iinBin": bin_value})
+    response.raise_for_status()
+    payload = response.json()
+    if "token" not in payload:
+        return payload
+    return await _poll(client, payload["token"])
 
 
 async def get_relation(client: httpx.AsyncClient, bin_value: str) -> dict[str, Any]:
@@ -380,24 +450,26 @@ async def run_parallel_checks(bin_value: str, *, case_id: str | None = None) -> 
                 raw_key = _RAW_KEYS[suffix]
                 if isinstance(value, Exception):
                     result[raw_key] = {"error": str(value), "source": raw_key}
+                    endpoint = "/courtcase" if suffix == "courtcase" else f"/company/{suffix}"
                     if case_id:
                         append_case_event(
                             case_id,
                             provider="Adata",
                             action=f"fallback:{suffix}",
                             subject={"type": "BIN", "value": bin_value},
-                            request={"endpoint": f"/company/{suffix}", "params": {"iinBin": bin_value}},
+                            request={"endpoint": endpoint, "params": {"iinBin": bin_value}},
                             outcome={"status": "error", "cached": False, "message": str(value)[:200]},
                         )
                 else:
                     result[raw_key] = value
+                    endpoint = "/courtcase" if suffix == "courtcase" else f"/company/{suffix}"
                     if case_id:
                         append_case_event(
                             case_id,
                             provider="Adata",
                             action=f"fallback:{suffix}",
                             subject={"type": "BIN", "value": bin_value},
-                            request={"endpoint": f"/company/{suffix}", "params": {"iinBin": bin_value}},
+                            request={"endpoint": endpoint, "params": {"iinBin": bin_value}},
                             outcome={"status": "ok", "cached": False},
                         )
 
@@ -767,6 +839,144 @@ async def fetch_individual_court_cases(
                 outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
             )
         return []
+
+
+async def fetch_company_court_cases(
+    bin_value: str, *, case_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Return company court cases from ``/api/courtcase``, cached 12h.
+
+    Same detailed format as individual courts (number, documents, history).
+    Init: GET /api/courtcase/{token}?iinBin=BIN → job token.
+    Poll: GET /api/company/info/check/{token}?token=… → paginated court_cases.
+    """
+    cache_key = adata_key("company_courts", bin_value)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        if case_id:
+            cases_cached = cached.get("cases")
+            count = len(cases_cached) if isinstance(cases_cached, list) else 0
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="company_courts (cached)",
+                subject={"type": "BIN", "value": bin_value},
+                request={"endpoint": "/courtcase", "params": {"iinBin": bin_value}},
+                outcome={"status": "ok", "cached": True, "counts": {"cases": count}},
+            )
+        cases = cached.get("cases")
+        return cases if isinstance(cases, list) else []
+
+    if not settings.adata_token:
+        return []
+
+    try:
+        timeout = settings.adata_timeout_seconds
+        check_url = _check_url()
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = _courtcase_token_path()
+            response = await client.get(url, params={"iinBin": bin_value})
+            response.raise_for_status()
+            payload = response.json()
+            if not payload.get("success", True) and "token" not in payload:
+                logger.warning(
+                    "company court-case init failed for BIN %s: %s",
+                    bin_value,
+                    payload.get("message") or payload,
+                )
+                if case_id:
+                    append_case_event(
+                        case_id,
+                        provider="Adata",
+                        action="company_courts",
+                        subject={"type": "BIN", "value": bin_value},
+                        request={"endpoint": "/courtcase", "params": {"iinBin": bin_value}},
+                        outcome={
+                            "status": "error",
+                            "cached": False,
+                            "message": str(payload.get("message") or "init_failed")[:200],
+                        },
+                    )
+                return []
+            job_token = payload.get("token")
+            if not job_token:
+                return []
+
+            cases = await _poll_company_court_cases(client, job_token, check_url)
+            await set_cached(cache_key, {"cases": cases}, ADATA_TTL)
+            if case_id:
+                docs = 0
+                for c in cases:
+                    if isinstance(c, dict):
+                        docs += len(c.get("documents") or [])
+                        for h in c.get("history") or []:
+                            if isinstance(h, dict):
+                                docs += len(h.get("documents") or [])
+                append_case_event(
+                    case_id,
+                    provider="Adata",
+                    action="company_courts",
+                    subject={"type": "BIN", "value": bin_value},
+                    request={
+                        "endpoint": "/courtcase → /company/info/check",
+                        "params": {"iinBin": bin_value},
+                    },
+                    outcome={"status": "ok", "cached": False, "counts": {"cases": len(cases), "docs": docs}},
+                )
+            return cases
+    except Exception as exc:
+        logger.warning("fetch_company_court_cases failed for BIN %s: %s", bin_value, exc)
+        if case_id:
+            append_case_event(
+                case_id,
+                provider="Adata",
+                action="company_courts",
+                subject={"type": "BIN", "value": bin_value},
+                request={"endpoint": "/courtcase", "params": {"iinBin": bin_value}},
+                outcome={"status": "error", "cached": False, "message": str(exc)[:200]},
+            )
+        return []
+
+
+async def _poll_company_court_cases(
+    client: httpx.AsyncClient,
+    job_token: str,
+    check_url: str,
+) -> list[dict[str, Any]]:
+    """Poll company info/check for courtcase results; merge all pages."""
+    attempts = settings.adata_poll_attempts
+    delay = settings.adata_poll_delay_seconds
+    ready_data: dict[str, Any] | None = None
+    for _ in range(attempts):
+        await asyncio.sleep(delay)
+        check = await client.get(check_url, params={"token": job_token, "page": 1})
+        check.raise_for_status()
+        result = check.json()
+        data = result.get("data")
+        if isinstance(data, dict) and "court_cases" in data:
+            ready_data = data
+            break
+
+    if ready_data is None:
+        return []
+
+    raw_cases: list[Any] = list(ready_data.get("court_cases") or [])
+    last_page = ready_data.get("last_page") or ready_data.get("total_pages") or 1
+    try:
+        pages_total = max(1, int(last_page))
+    except (TypeError, ValueError):
+        pages_total = 1
+
+    for page in range(2, pages_total + 1):
+        check = await client.get(check_url, params={"token": job_token, "page": page})
+        check.raise_for_status()
+        page_data = check.json().get("data")
+        if isinstance(page_data, dict):
+            raw_cases.extend(page_data.get("court_cases") or [])
+
+    return [
+        _normalize_individual_court_case(row) for row in raw_cases if isinstance(row, dict)
+    ]
 
 
 # ---------------------------------------------------------------------------

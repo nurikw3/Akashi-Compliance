@@ -297,9 +297,26 @@ export async function rescreenCaseLseg(
   return request(`/api/cases/${caseId}/lseg/rescreen${q}`, { method: 'POST' })
 }
 
+export async function fetchFullReportMeta(caseId: string): Promise<{
+  hasReport: boolean
+  generatedAt: string | null
+  status?: string | null
+  fullReportStale?: boolean
+  fullReportStaleMessage?: string | null
+  fullReportContextEstimate?: import('@/lib/types').FullReportContextEstimate | null
+}> {
+  return request(`/api/cases/${caseId}/full-report/meta`)
+}
+
 export async function fetchFullReport(
   caseId: string
-): Promise<{ report: string; generatedAt: string | null }> {
+): Promise<{
+  report: string
+  generatedAt: string | null
+  stale?: boolean
+  staleMessage?: string | null
+  contextEstimate?: import('@/lib/types').FullReportContextEstimate | null
+}> {
   return request(`/api/cases/${caseId}/full-report`)
 }
 

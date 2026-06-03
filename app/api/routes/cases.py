@@ -534,10 +534,9 @@ async def generate_case_full_report(case_id: str, force: bool = False) -> dict[s
         )
     if force:
         enriched = row.get("enriched_data") or {}
-        # Force mode invalidates stale persisted report so frontend won't
-        # treat old content as a freshly regenerated one during polling.
-        enriched.pop("fullReport", None)
-        enriched.pop("fullReportGeneratedAt", None)
+        # Keep the previous report until the new one is saved — clearing here
+        # caused reports to vanish when the user navigated away mid-generation.
+        enriched["fullReportStatus"] = "generating"
         db.update_case(case_id, enriched_data=enriched)
 
     _asyncio.create_task(generate_full_report(case_id))
@@ -552,14 +551,49 @@ async def generate_case_full_report(case_id: str, force: bool = False) -> dict[s
 @router.get("/cases/{case_id}/full-report")
 def get_case_full_report(case_id: str) -> dict[str, Any]:
     """Получить готовый полный отчёт."""
+    from app.services.ai.full_report_meta import (
+        compute_full_report_staleness,
+        estimate_full_report_context,
+        full_report_meta_for_row,
+    )
+
     row = db.get_case(case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Case not found")
     enriched = row.get("enriched_data") or {}
     report = enriched.get("fullReport")
+    meta = full_report_meta_for_row(row)
+    context_estimate = estimate_full_report_context(row)
+    staleness = compute_full_report_staleness(enriched)
     if not report:
         raise HTTPException(status_code=404, detail="Отчёт ещё не сгенерирован")
-    return {"report": report, "generatedAt": enriched.get("fullReportGeneratedAt")}
+    return {
+        "report": report,
+        "generatedAt": enriched.get("fullReportGeneratedAt"),
+        "stale": staleness["stale"],
+        "staleMessage": staleness.get("message"),
+        "graphBuiltAt": staleness.get("treeBuiltAt"),
+        "contextEstimate": context_estimate,
+        "fullReportStale": meta["fullReportStale"],
+        "fullReportStaleMessage": meta.get("fullReportStaleMessage"),
+    }
+
+
+@router.get("/cases/{case_id}/full-report/meta")
+def get_case_full_report_meta(case_id: str) -> dict[str, Any]:
+    """Staleness and context size without loading report body."""
+    from app.services.ai.full_report_meta import full_report_meta_for_row
+
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    enriched = row.get("enriched_data") or {}
+    return {
+        "hasReport": bool(enriched.get("fullReport")),
+        "generatedAt": enriched.get("fullReportGeneratedAt"),
+        "status": enriched.get("fullReportStatus"),
+        **full_report_meta_for_row(row),
+    }
 
 
 @router.get("/cases/{case_id}/score")
