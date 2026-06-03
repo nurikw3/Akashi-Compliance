@@ -202,6 +202,45 @@ def search_cases_by_name(name: str, limit: int = 5) -> list[dict[str, Any]]:
     return [_deserialize_case(row) for row in rows]
 
 
+def search_cases_by_director(name: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Find cases where the director name contains the given string."""
+    pattern = f"%{name}%"
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, company_name, iin, status, risk_level, enriched_data,
+                   sources, conclusion, created_at, parent_case_id
+            FROM cases
+            WHERE enriched_data IS NOT NULL
+              AND enriched_data <> ''
+              AND (
+                enriched_data::jsonb->'enrichment'->'companyInfo'->>'director' ILIKE %s
+              )
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (pattern, limit),
+        ).fetchall()
+    return [_deserialize_case(row) for row in rows]
+
+
+def find_cases_by_risk_level(risk_level: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Find cases by risk level."""
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, company_name, iin, status, risk_level, enriched_data,
+                   sources, conclusion, created_at, parent_case_id
+            FROM cases
+            WHERE risk_level = %s AND status = 'ready'
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (risk_level, limit),
+        ).fetchall()
+    return [_deserialize_case(row) for row in rows]
+
+
 def find_case_by_iin(iin: str) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute(

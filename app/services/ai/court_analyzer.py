@@ -79,6 +79,10 @@ def _case_to_text(case: dict[str, Any]) -> str:
     parts: list[str] = []
     if case.get("type"):
         parts.append(str(case["type"]))
+    if case.get("role"):
+        parts.append(f"роль: {case['role']}")
+    if case.get("category"):
+        parts.append(str(case["category"]))
     if case.get("status"):
         parts.append(str(case["status"]))
     if case.get("date"):

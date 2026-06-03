@@ -85,6 +85,7 @@ async def chat_reply_for_case(case_id: str, user_message: str) -> dict[str, Any]
         history=prior_history,
         data_sources=enriched.get("dataSources"),
         lseg=enriched.get("lseg"),
+        enriched_data=enriched,
     )
     assistant = db.add_chat_message(case_id=case_id, role="assistant", content=reply)
     return {"message": assistant, "aiMode": ai_mode}

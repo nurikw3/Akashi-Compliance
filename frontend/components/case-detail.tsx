@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ChevronRight,
   Database,
+  Sparkles,
 } from 'lucide-react'
 import { downloadCaseReport, fetchAiStatus, rescreenAllWithLseg } from '@/lib/api'
 import { useCases } from '@/lib/cases-context'
@@ -808,101 +809,182 @@ function ChatTab({ caseData }: { caseData: Case }) {
     }
   }
 
-  const suggestions = [
-    'Какие основные риски по этому контрагенту?',
-    'Перечисли аффилированные компании и учредителей',
-    'Есть ли налоговая задолженность и судебные дела?',
-    'Составь служебную записку для согласования',
-    'Какие документы запросить перед договором?',
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [caseData.chatHistory, isLoading])
+
+  const suggestionGroups = [
+    {
+      label: '🎯 Решение',
+      items: [
+        'Можно ли подписывать договор с этой компанией? Дай чёткий вывод.',
+        'Составь служебную записку для согласования сделки на 50 млн тг',
+      ],
+    },
+    {
+      label: '🕸️ Сеть и аффилиаты',
+      items: [
+        'Обойди граф аффилиатов — есть ли проблемы в группе компаний?',
+        'В каких ещё компаниях директор этой компании является руководителем?',
+        'Сравни эту компанию с её основным аффилиатом',
+      ],
+    },
+    {
+      label: '⚖️ Суды',
+      items: [
+        'Какие судебные дела у директора? Есть ли красные флаги для сделки?',
+        'Директор выступает ответчиком по каким статьям?',
+      ],
+    },
+    {
+      label: '🛡️ Санкции',
+      items: [
+        'Есть ли санкции у компании или её аффилиатов?',
+        'Кто из связанных лиц попал в санкционные списки LSEG?',
+      ],
+    },
+    {
+      label: '📋 Документы',
+      items: [
+        'Какие документы запросить у контрагента перед подписанием договора?',
+      ],
+    },
   ]
+
+  const handleSuggest = (s: string) => {
+    setInput(s)
+    setShowSuggestions(false)
+  }
 
   return (
     <div className="flex flex-col h-[600px]">
       {!hasData && (
         <div className="mb-4 text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-4 py-3">
-          Дождитесь завершения проверки (статус «готово»), чтобы ИИ получил полное досье из Adata.
+          Дождитесь завершения проверки (статус «готово»), чтобы ИИ получил полное досье.
         </div>
       )}
       {openaiReady === false && hasData && (
-        <div className="mb-4 text-sm text-neutral-600 bg-neutral-50 border border-neutral-200 rounded-lg px-4 py-3">
-          OpenAI не подключён — ответы по шаблонам и фрагментам досье. Добавьте{' '}
-          <code className="text-xs bg-neutral-100 px-1 rounded">OPENAI_API_KEY</code> в .env для
-          полноценного диалога.
+        <div className="mb-3 text-sm text-neutral-600 bg-neutral-50 border border-neutral-200 rounded-lg px-4 py-3">
+          OpenAI не подключён — ответы по шаблонам.{' '}
+          <code className="text-xs bg-neutral-100 px-1 rounded">OPENAI_API_KEY</code> → полный диалог.
         </div>
       )}
       {openaiReady && hasData && (
-        <div className="mb-4 text-sm text-emerald-800 bg-emerald-50 border border-emerald-100 rounded-lg px-4 py-3">
-          ИИ видит все данные дела: компания, налоги, суды, риски, аффилиаты и заключение.
+        <div className="mb-3 text-sm text-emerald-800 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+          ИИ видит данные дела: суды, санкции, аффилиаты, скоринг.
         </div>
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-auto space-y-4 mb-4">
+      <div className="flex-1 overflow-auto space-y-3 mb-3 pr-1">
         {caseData.chatHistory.length === 0 ? (
-          <div className="text-center py-12">
-            <MessageSquare className="w-12 h-12 text-neutral-300 mx-auto mb-4" />
-            <p className="text-neutral-500 mb-6">Задайте вопрос об этой компании</p>
-            <div className="flex flex-wrap justify-center gap-2">
-              {suggestions.map((s, i) => (
+          <div className="py-8 space-y-5">
+            <div className="text-center">
+              <MessageSquare className="w-10 h-10 text-neutral-300 mx-auto mb-3" />
+              <p className="text-neutral-500 text-sm">Задайте вопрос об этой компании</p>
+            </div>
+            {suggestionGroups.map((group) => (
+              <div key={group.label}>
+                <p className="text-xs font-semibold text-neutral-400 uppercase tracking-wide mb-2 px-1">
+                  {group.label}
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {group.items.map((s, i) => (
+                    <button
+                      key={i}
+                      onClick={() => handleSuggest(s)}
+                      className="text-left px-3 py-2 bg-neutral-50 hover:bg-neutral-100 border border-neutral-200 rounded-lg text-sm text-neutral-700 transition-colors"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            {caseData.chatHistory.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-[82%] rounded-2xl px-4 py-3 ${
+                    msg.role === 'user'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white border border-neutral-200 text-neutral-900'
+                  }`}
+                >
+                  <MarkdownContent className="text-sm" inverted={msg.role === 'user'}>
+                    {msg.content}
+                  </MarkdownContent>
+                </div>
+              </div>
+            ))}
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="bg-white border border-neutral-200 rounded-2xl px-4 py-3">
+                  <Loader2 className="w-4 h-4 text-neutral-400 animate-spin" />
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </>
+        )}
+      </div>
+
+      {/* Quick suggestions dropdown */}
+      {showSuggestions && caseData.chatHistory.length > 0 && (
+        <div className="mb-2 border border-neutral-200 rounded-xl bg-white shadow-sm overflow-hidden max-h-64 overflow-y-auto">
+          {suggestionGroups.map((group) => (
+            <div key={group.label} className="border-b border-neutral-100 last:border-0">
+              <p className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wide px-3 pt-2 pb-1">
+                {group.label}
+              </p>
+              {group.items.map((s, i) => (
                 <button
                   key={i}
-                  onClick={() => setInput(s)}
-                  className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-full text-sm text-neutral-700 transition-colors"
+                  onClick={() => handleSuggest(s)}
+                  className="w-full text-left px-3 py-2 text-sm text-neutral-700 hover:bg-neutral-50 transition-colors"
                 >
                   {s}
                 </button>
               ))}
             </div>
-          </div>
-        ) : (
-          caseData.chatHistory.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                  msg.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white border border-neutral-200 text-neutral-900'
-                }`}
-              >
-                <MarkdownContent
-                  className="text-sm"
-                  inverted={msg.role === 'user'}
-                >
-                  {msg.content}
-                </MarkdownContent>
-              </div>
-            </div>
-          ))
-        )}
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-white border border-neutral-200 rounded-2xl px-4 py-3">
-              <Loader2 className="w-5 h-5 text-neutral-400 animate-spin" />
-            </div>
-          </div>
-        )}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* Input */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 items-center">
+        {caseData.chatHistory.length > 0 && (
+          <button
+            onClick={() => setShowSuggestions((v) => !v)}
+            title="Шаблоны вопросов"
+            className="p-3 border border-neutral-200 rounded-xl text-neutral-500 hover:bg-neutral-50 transition-colors"
+          >
+            <Sparkles className="w-4 h-4" />
+          </button>
+        )}
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder={hasData ? 'Введите вопрос по контрагенту...' : 'Данные загружаются...'}
+          placeholder={hasData ? 'Введите вопрос...' : 'Данные загружаются...'}
           disabled={!hasData}
-          className="flex-1 px-4 py-3 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-neutral-50"
+          className="flex-1 px-4 py-3 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-neutral-50 text-sm"
         />
         <button
           onClick={handleSend}
           disabled={!input.trim() || isLoading || !hasData}
           className="px-4 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <Send className="w-5 h-5" />
+          <Send className="w-4 h-4" />
         </button>
       </div>
     </div>

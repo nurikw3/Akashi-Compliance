@@ -45,5 +45,18 @@ def test_normalize_individual_court_case_case_level_documents():
     }
     case = _normalize_individual_court_case(raw)
     assert case["documents"][0]["doc_link"] == "https://cdn.example/a.pdf"
-    assert case["defendants"] == ["Иванов И.И."]
+    assert case["participants"] == ["Иванов И.И."]
+    assert case["defendants"] == []
     assert len(case["history"]) == 1
+
+
+def test_normalize_individual_preserves_role_over_sides():
+    raw = {
+        "number": "7528-23-00-3/41432",
+        "role": "Третья сторона",
+        "category": "Статья 73",
+        "defendants": ["НУРУШЕВ АРМАН ЖАКЫПБЕКОВИЧ", "ИВАНОВ И.И."],
+    }
+    case = _normalize_individual_court_case(raw)
+    assert case["role"] == "Третья сторона"
+    assert "НУРУШЕВ" in case["defendants"][0]

@@ -717,9 +717,11 @@ def _normalize_individual_court_case(raw: dict[str, Any]) -> dict[str, Any]:
     case_documents = _normalize_court_documents(raw.get("documents"))
     defendants = list(raw.get("defendants") or [])
     plaintiffs = list(raw.get("plaintiffs") or [])
+    participants: list[str] = []
     sides = raw.get("sides")
-    if isinstance(sides, list) and sides and not defendants and not plaintiffs:
-        defendants = [str(s) for s in sides if s]
+    if isinstance(sides, list):
+        participants = [str(s) for s in sides if s]
+    # Do not map generic ``sides`` to defendants — that breaks role (третья сторона vs ответчик).
 
     return {
         "number": raw.get("number"),
@@ -733,6 +735,7 @@ def _normalize_individual_court_case(raw: dict[str, Any]) -> dict[str, Any]:
         "role": raw.get("role"),
         "defendants": defendants,
         "plaintiffs": plaintiffs,
+        "participants": participants,
         "documents": case_documents,
         "history": history,
     }

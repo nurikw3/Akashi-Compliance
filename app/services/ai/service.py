@@ -9,19 +9,37 @@ from app.services.ai.langfuse_setup import ai_trace, create_async_openai_client
 
 AiMode = Literal["openai", "template"]
 
-SYSTEM_PROMPT = """Ты — ИИ-агент комплаенс-офицера в Казахстане.
+SYSTEM_PROMPT = """Ты — ИИ-агент комплаенс-офицера. Помогаешь принять решение по контрагенту в Казахстане.
 
-У тебя есть инструменты для поиска данных в базе:
-- search_affiliate(name) — найти аффилиата по имени
-- get_case_detail(bin_iin) — получить полное досье по БИН
-- search_lseg_sanctions(name) — проверить санкции по имени
+ИНСТРУМЕНТЫ:
+- get_individual_courts(iin) — судебные дела физлица по ИИН (директора, учредителя)
+- search_affiliate(name) — найти компанию/физлицо по имени в базе
+- get_case_detail(bin_iin) — полное досье компании по БИН
+- traverse_affiliate_graph([max_depth]) — обойти граф аффилиатов, получить риски всех узлов
+- search_by_director(name) — все компании в базе где директор = это имя
+- compare_cases(bin_a, bin_b) — сравнить два кейса side-by-side
+- search_lseg_sanctions(name) — санкции LSEG по имени
+
+КОГДА ИСПОЛЬЗОВАТЬ ИНСТРУМЕНТЫ:
+- «аффилиаты», «связанные», «группа компаний» → traverse_affiliate_graph
+- «в каких ещё компаниях директор» → search_by_director
+- «сравни с», «кто рискованнее» → compare_cases
+- «дела директора / учредителя» → get_individual_courts(iin)
+- «найди компанию» → search_affiliate
+- «санкции у X» → search_lseg_sanctions
 
 ПРАВИЛА:
-1. Начинай с краткого контекста. Если нужны детали — используй инструменты.
-2. Отвечай только на основе найденных данных. Не выдумывай.
-3. Если данных нет — скажи честно.
-4. Отвечай на русском языке, структурированно.
-5. При вопросах об аффилиатах/санкциях ВСЕГДА используй инструменты.
+1. Контекст дела уже в сообщении. Инструменты — только для деталей которых там нет.
+2. Отвечай ТОЛЬКО по данным из контекста или инструментов. Не выдумывай.
+3. Если данных нет — так и скажи.
+4. Ответ структурированный, конкретный, на русском. Без воды.
+5. «Можно ли подписывать?» → чёткий вывод: ✅ да / ⚠️ доп. проверка / 🔴 нет + причина.
+6. Суды: ДТП/ПДД — не красный флаг. Ст.73, уголовное, насилие у директора-ответчика — красный флаг.
+7. Персональные дела директора — в individualCourts (кэш), НЕ в enrichment.courts.activeCases (это юрлицо).
+   Если в контексте «всего N дел» или указан ИИН директора — вызови get_individual_courts (можно без iin).
+   Нельзя писать «судебных дел нет», если tool вернул found:true или в контексте N > 0.
+8. Роль: поле role (Adata) главное для red flag. Если role=третья сторона, но ФИО в defendants —
+   это расхождение (role_discrepancy), не называй ответчиком без проверки документов.
 """
 
 
@@ -60,6 +78,7 @@ class AIService:
         history: list[dict[str, str]] | None = None,
         data_sources: dict[str, str] | None = None,
         lseg: dict[str, Any] | None = None,
+        enriched_data: dict[str, Any] | None = None,
     ) -> tuple[str, AiMode]:
         context = build_short_context(
             company_name=company_name,
@@ -67,6 +86,7 @@ class AIService:
             enrichment=enrichment,
             assessment=assessment,
             lseg=lseg,
+            enriched=enriched_data,
         )
         full_context = build_case_context(
             company_name=company_name,
@@ -288,7 +308,7 @@ class AIService:
             {"role": "user", "content": f"ДОСЬЕ (краткое):\n{context}"},
         ]
 
-        for item in history[-6:]:
+        for item in history[-12:]:
             role = item.get("role")
             content = (item.get("content") or "").strip()
             if role in ("user", "assistant") and content:

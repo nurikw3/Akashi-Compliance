@@ -14,6 +14,13 @@ from typing import Any
 
 from app.core.config import settings
 from app.models import db
+from app.services.ai.context import resolve_individual_courts_key
+from app.services.ai.court_roles import (
+    normalize_case_role as _normalize_case_role,
+    normalize_person_name_key as _normalize_person_name_key,
+    party_list_role_for_person as _party_list_role_for_person,
+    resolve_person_case_role as _resolve_person_case_role,
+)
 from app.services.affiliate_tree import normalize_bin
 from app.services.verification_log import append_case_event
 
@@ -43,13 +50,17 @@ _COURTS_DEAL_POLICY = """
   ст.73 (семейно-бытовые), насилию, уголовным категориям, мошенничеству, хищению.
 
 🟡 YELLOW — упомянуть, не отказ:
-- Налоговое взыскание с физлица-директора.
+- Налоговое взыскание с физлица-директора (роль Adata = ответчик).
 - Договорной спор аффилированного юрлица (не директор).
 - Исполнительное производство на крупную сумму.
+- **Расхождение ролей:** в Adata «третья сторона», но ФИО директора в списке ответчиков/истцов —
+  не считать автоматически ответчиком; обязательно сверить документы дела.
 
 ⚪ ИГНОРИРОВАТЬ (не упоминать в выводе вообще):
 - ДТП, ст.610, ПДД, нарушение ПДД, компенсация ущерба от ДТП.
-- Участие третьей стороной.
+- Участие **третьей стороной** без расхождения со списком сторон.
+
+🔴 RED только если роль **Adata** = ответчик (не только попадание в список сторон).
 - Сводные строки без конкретного дела («Г:0 У:0»).
 - Административные штрафы водителю.
 
@@ -491,34 +502,41 @@ def _contract_relevance_tier(
     if _should_skip_case_for_report(case):
         return "noise"
 
-    role = _extract_case_role_by_parties(case, person_name)
+    resolved = _resolve_person_case_role(case, person_name)
+    adata_role = resolved["adata_role"]
     category = str(case.get("category") or case.get("type") or "")
 
-    if role == "Третья сторона":
-        return "noise"
     if _is_low_relevance_for_contract(category):
         return "noise"
 
     officer = _is_officer_role(person_role)
-    if role == "Ответчик" and _is_serious_court_category(category):
+
+    if adata_role == "Третья сторона":
+        if resolved["has_discrepancy"]:
+            return "yellow"
+        return "noise"
+
+    if adata_role == "Ответчик" and _is_serious_court_category(category):
         return "red"
-    if role == "Ответчик" and officer and (
+    if adata_role == "Ответчик" and officer and (
         "налог" in category.lower() or "задолж" in category.lower()
     ):
         return "yellow"
-    if role == "Ответчик" and (
+    if adata_role == "Ответчик" and (
         "договор" in category.lower()
         or "сделк" in category.lower()
         or "спор" in category.lower()
     ):
-        return "yellow" if not officer else "yellow"
+        return "yellow"
 
     ai = case.get("aiAnalysis") or {}
-    if role == "Ответчик" and str(ai.get("severity") or "").lower() in ("critical", "high"):
-        if not _is_low_relevance_for_contract(category):
-            return "red" if officer else "yellow"
+    if adata_role == "Ответчик" and str(ai.get("severity") or "").lower() in (
+        "critical",
+        "high",
+    ):
+        return "red" if officer else "yellow"
 
-    if role == "Ответчик":
+    if adata_role == "Ответчик":
         return "neutral"
     return "neutral"
 
@@ -578,7 +596,8 @@ def _format_court_case_dossier_bullet(
     person_name: str,
     person_role: str = "",
 ) -> str:
-    role = _extract_case_role_by_parties(case, person_name)
+    resolved = _resolve_person_case_role(case, person_name)
+    role = resolved["display_role"]
     category = case.get("category") or case.get("type") or "категория не указана"
     result = case.get("result") or case.get("status") or "—"
     date = case.get("date") or "—"
@@ -904,7 +923,8 @@ def _format_person_courts_for_llm_block(
         key=lambda c: _court_case_importance_score(c, person_name, person_role=person_role),
         reverse=True,
     )[:6]:
-        role = _extract_case_role_by_parties(case, person_name)
+        resolved = _resolve_person_case_role(case, person_name)
+        role = resolved["display_role"]
         cat = case.get("category") or case.get("type") or "—"
         lines.append(
             f"  [RED] {role} · «{_short_text(cat, max_len=90)}» · {case.get('date') or '—'}"
@@ -913,10 +933,13 @@ def _format_person_courts_for_llm_block(
         if ai.get("summary_ru"):
             lines.append(f"    {_short_text(ai['summary_ru'], max_len=200)}")
     for case in yellow_cases[:4]:
-        role = _extract_case_role_by_parties(case, person_name)
+        resolved = _resolve_person_case_role(case, person_name)
+        role = resolved["display_role"]
         cat = case.get("category") or case.get("type") or "—"
+        disc = " · расхождение ролей" if resolved["has_discrepancy"] else ""
         lines.append(
-            f"  [YELLOW] {role} · «{_short_text(cat, max_len=90)}» · {case.get('date') or '—'}"
+            f"  [YELLOW] {role}{disc} · «{_short_text(cat, max_len=90)}» · "
+            f"{case.get('date') or '—'}"
         )
     return "\n".join(lines)
 
@@ -1012,6 +1035,7 @@ def _format_courts_conclusion_fallback(row: dict[str, Any]) -> str:
 
     lines = ["### Вывод ИИ"]
     has_red = False
+    has_yellow = False
 
     if isinstance(individual_courts, dict):
         for iin, cases in individual_courts.items():
@@ -1030,29 +1054,46 @@ def _format_courts_conclusion_fallback(row: dict[str, Any]) -> str:
                 tier = _contract_relevance_tier(
                     case, person_name, person_role=person_role
                 )
-                if tier != "red":
-                    continue
-                has_red = True
-                role = _extract_case_role_by_parties(case, person_name)
+                resolved = _resolve_person_case_role(case, person_name)
+                role = resolved["display_role"]
                 cat = case.get("category") or case.get("type") or "—"
                 who = "директор" if _is_officer_role(person_role) else person_name
-                lines.append(
-                    f"- **{who}** ({person_name}): {role} по «{_short_text(cat, 85)}» — "
-                    f"**red flag** для сделки (репутация/дисциплина ключевого лица)."
-                )
+                if tier == "red":
+                    has_red = True
+                    lines.append(
+                        f"- **{who}** ({person_name}): {role} по "
+                        f"«{_short_text(cat, max_len=85)}» — **red flag** (роль Adata: ответчик)."
+                    )
+                elif tier == "yellow" and resolved["has_discrepancy"]:
+                    has_yellow = True
+                    lines.append(
+                        f"- **{who}** ({person_name}): {role} по "
+                        f"«{_short_text(cat, max_len=85)}» — **доп. проверка:** "
+                        f"role Adata ≠ список сторон, сверить документы."
+                    )
+                elif tier == "yellow":
+                    has_yellow = True
+                    lines.append(
+                        f"- **{who}** ({person_name}): {role} по "
+                        f"«{_short_text(cat, max_len=85)}» — доп. проверка."
+                    )
 
-    if not has_red:
+    if not has_red and not has_yellow:
         lines.append(
             "- Существенных red flag по судам для блокировки сделки не выявлено "
             "(ДТП/ПДД/мелочь не учитывались)."
         )
 
-    verdict_level = "red" if has_red else "green"
-    action = (
-        "Эскалировать на юриста/комплаенс: проверить материалы по ст.73 и ключевым лицам."
-        if has_red
-        else "Суды не блокируют подписание; плановый мониторинг."
-    )
+    verdict_level = "red" if has_red else ("yellow" if has_yellow else "green")
+    if has_red:
+        action = "Эскалировать на юриста/комплаенс: проверить материалы по ст.73 и ключевым лицам."
+    elif has_yellow:
+        action = (
+            "Сверить материалы дел с расхождением role/список сторон; "
+            "не считать ответчиком без подтверждения."
+        )
+    else:
+        action = "Суды не блокируют подписание; плановый мониторинг."
     lines.append(f"- Риск: {verdict_level} flag")
     lines.append(f"- Действие: {action}")
     return "\n".join(lines)
@@ -1183,7 +1224,7 @@ def _append_sanctions_snapshot(parts: list[str], row: dict[str, Any]) -> None:
             parts.append(f"- [{f.get('severity', '')}] {f.get('message', '')}")
 
 
-def _format_individual_court_case(case: dict) -> list[str]:
+def _format_individual_court_case(case: dict, *, person_name: str = "") -> list[str]:
     """Format one individual court case with history and document links."""
     lines = [
         f"- Дело №{case.get('number') or '—'}: {case.get('type') or '—'}, "
@@ -1196,12 +1237,24 @@ def _format_individual_court_case(case: dict) -> list[str]:
     judge = case.get("judge")
     if _is_populated(judge):
         lines.append(f"  Судья: {judge}")
+    resolved = _resolve_person_case_role(case, person_name if person_name else "")
+    lines.append(f"  Роль (Adata): {resolved['adata_role']}")
+    if resolved["party_list_role"]:
+        lines.append(f"  Роль по списку сторон: {resolved['party_list_role']}")
+    if resolved["has_discrepancy"]:
+        lines.append(
+            "  ⚠️ Расхождение: сверить постановление/определение — "
+            "роль в Adata не совпадает со списком участников."
+        )
     defendants = case.get("defendants") or []
     plaintiffs = case.get("plaintiffs") or []
+    participants = case.get("participants") or []
     if defendants:
-        lines.append(f"  Ответчики: {', '.join(str(d) for d in defendants[:5])}")
+        lines.append(f"  Ответчики (список): {', '.join(str(d) for d in defendants[:5])}")
     if plaintiffs:
-        lines.append(f"  Истцы: {', '.join(str(p) for p in plaintiffs[:5])}")
+        lines.append(f"  Истцы (список): {', '.join(str(p) for p in plaintiffs[:5])}")
+    if participants and not defendants and not plaintiffs:
+        lines.append(f"  Стороны: {', '.join(str(s) for s in participants[:5])}")
     for doc in (case.get("documents") or []):
         file_name = doc.get("file_name") or "документ"
         doc_link = doc.get("doc_link") or ""
@@ -1252,7 +1305,7 @@ def _format_individual_courts_for_llm(
         lines.append(f"Дел: {len(cases)}")
         for case in cases[:8]:
             if isinstance(case, dict):
-                lines.extend(_format_individual_court_case(case))
+                lines.extend(_format_individual_court_case(case, person_name=str(name)))
         if len(cases) > 8:
             lines.append(f"  … ещё {len(cases) - 8} дел не показано")
 
@@ -1269,34 +1322,9 @@ def _short_text(value: Any, *, max_len: int = 80) -> str:
     return text[: max_len - 1].rstrip() + "…"
 
 
-def _normalize_case_role(raw_role: Any) -> str:
-    role = str(raw_role or "").strip().lower()
-    if not role:
-        return "Не указано"
-    if "ответ" in role or "defend" in role:
-        return "Ответчик"
-    if "ист" in role or "plaint" in role:
-        return "Истец"
-    if "треть" in role or "third" in role:
-        return "Третья сторона"
-    return _short_text(raw_role, max_len=28)
-
-
-def _normalize_person_name_key(raw_name: Any) -> str:
-    return re.sub(r"\s+", " ", str(raw_name or "").strip().lower())
-
-
 def _extract_case_role_by_parties(case: dict[str, Any], person_name: str) -> str:
-    name_key = _normalize_person_name_key(person_name)
-    defendants = case.get("defendants") or []
-    plaintiffs = case.get("plaintiffs") or []
-    defendant_keys = {_normalize_person_name_key(x) for x in defendants if x}
-    plaintiff_keys = {_normalize_person_name_key(x) for x in plaintiffs if x}
-    if name_key and name_key in defendant_keys:
-        return "Ответчик"
-    if name_key and name_key in plaintiff_keys:
-        return "Истец"
-    return _normalize_case_role(case.get("role"))
+    """Роль для таблицы: Adata + пометка при расхождении со списком сторон."""
+    return _resolve_person_case_role(case, person_name)["display_role"]
 
 
 def _count_case_source_links(case: dict[str, Any]) -> int:
@@ -1403,7 +1431,7 @@ def _collect_court_rows(row: dict[str, Any]) -> list[dict[str, Any]]:
             for case in cases:
                 if not isinstance(case, dict) or _should_skip_case_for_report(case):
                     continue
-                case_role = _extract_case_role_by_parties(case, person_name)
+                resolved = _resolve_person_case_role(case, person_name)
                 category = case.get("category") or case.get("type") or "—"
                 tier = _contract_relevance_tier(
                     case, person_name, person_role=person_role
@@ -1412,13 +1440,15 @@ def _collect_court_rows(row: dict[str, Any]) -> list[dict[str, Any]]:
                     continue
                 row_item = {
                     "person_entity": _short_text(person_name, max_len=46),
-                    "role_in_case": case_role,
+                    "role_in_case": resolved["display_role"],
                     "category": _short_text(category, max_len=70),
                     "result": _short_text(case.get("result") or case.get("status"), max_len=48),
                     "date": _short_text(case.get("date"), max_len=24),
                     "source_links": _count_case_source_links(case),
                     "is_top_officer": is_top_officer,
-                    "is_defendant": case_role == "Ответчик",
+                    "is_defendant": resolved["adata_role"] == "Ответчик",
+                    "has_role_discrepancy": resolved["has_discrepancy"],
+                    "party_list_role": resolved["party_list_role"],
                     "is_serious": _is_serious_court_category(str(category)),
                     "is_unresolved": _is_unresolved_case(case),
                     "contract_tier": tier,
@@ -1439,7 +1469,9 @@ def _court_row_risk_score(item: dict[str, Any]) -> int:
 
 def _build_courts_verdict(rows: list[dict[str, Any]]) -> tuple[str, list[str], str, list[str]]:
     defendants = [r for r in rows if r.get("is_defendant")]
-    third_party_only = bool(rows) and all(r.get("role_in_case") == "Третья сторона" for r in rows)
+    third_party_only = bool(rows) and all(
+        not r.get("is_defendant") and not r.get("has_role_discrepancy") for r in rows
+    )
     red_matches = [
         r
         for r in rows
@@ -1461,6 +1493,30 @@ def _build_courts_verdict(rows: list[dict[str, Any]]) -> tuple[str, list[str], s
         actions = [
             "Эскалировать кейс на ручную юридическую проверку до одобрения.",
             "Запросить материалы дела и внутренние объяснения по руководителю.",
+        ]
+        return level, why, impact, actions
+
+    discrepancy_officer = [
+        r
+        for r in rows
+        if r.get("has_role_discrepancy") and r.get("is_top_officer")
+    ]
+    if discrepancy_officer:
+        sample = discrepancy_officer[0]
+        level = "yellow"
+        why = [
+            "Расхождение Adata: в поле role — третья сторона, но ФИО руководителя "
+            "есть в списке ответчиков/истцов.",
+            f"Пример: «{sample.get('category')}» ({sample.get('date') or '—'}).",
+            "Сверить постановление/определение: фактическая роль может отличаться от role.",
+        ]
+        impact = (
+            "Средняя релевантность: без документов нельзя исключить прямую вовлечённость "
+            "ключевого лица — нужна ручная проверка."
+        )
+        actions = [
+            "Запросить материалы дел с расхождением ролей и уточнить статус участника.",
+            "Не считать автоматически «ответчиком» только по списку сторон.",
         ]
         return level, why, impact, actions
 
@@ -1508,13 +1564,14 @@ def _format_courts_table_block(row: dict[str, Any], *, max_rows: int = 8) -> str
     hidden_count = max(0, len(rows_sorted) - len(shown))
     total_cases = len(rows_sorted)
     defendant_count = sum(1 for r in rows_sorted if r.get("is_defendant"))
-    third_party_count = sum(1 for r in rows_sorted if r.get("role_in_case") == "Третья сторона")
+    discrepancy_count = sum(1 for r in rows_sorted if r.get("has_role_discrepancy"))
     serious_count = sum(1 for r in rows_sorted if r.get("is_serious"))
 
     lines = [
         f"Кейс: {company_name}. Судебных записей: {total_cases}.",
         (
-            f"Сводка: ответчики {defendant_count}, третья сторона {third_party_count}, "
+            f"Сводка: ответчик (Adata) {defendant_count}, "
+            f"расхождение role/список сторон {discrepancy_count}, "
             f"серьёзные категории {serious_count}."
         ),
         "",
@@ -1527,7 +1584,7 @@ def _format_courts_table_block(row: dict[str, Any], *, max_rows: int = 8) -> str
             + " | ".join(
                 [
                     _short_text(item.get("person_entity"), max_len=46).replace("|", "/"),
-                    _short_text(item.get("role_in_case"), max_len=20).replace("|", "/"),
+                    _short_text(item.get("role_in_case"), max_len=52).replace("|", "/"),
                     _short_text(item.get("category"), max_len=70).replace("|", "/"),
                     _short_text(item.get("result"), max_len=48).replace("|", "/"),
                     _short_text(item.get("date"), max_len=18).replace("|", "/"),
@@ -2347,17 +2404,28 @@ def _build_full_context(row: dict[str, Any]) -> str:
         parts.append(f"\n## ДЕРЕВО АФФИЛИАТОВ\n{tree_text}")
         _log_section("ДЕРЕВО АФФИЛИАТОВ", tree_text)
 
-    director_profile = enriched.get("directorProfile")
-    if _is_populated(director_profile) and isinstance(director_profile, dict):
-        dir_courts = director_profile.get("courts") or {}
-        dir_companies = director_profile.get("affiliates") or {}
-        dir_flags = director_profile.get("riskFlags") or []
-        director_text = (
-            f"Другие компании директора: {_format_director_companies(dir_companies)}\n"
-            f"Судебные дела директора как физлица: активных {dir_courts.get('activeCases', 0)}, "
-            f"сумма {dir_courts.get('totalAmount', 0)} тг\n"
-            f"Риск-флаги: {'; '.join(str(f) for f in dir_flags) or 'нет'}"
-        )
+        director_profile = enriched.get("directorProfile")
+        if _is_populated(director_profile) and isinstance(director_profile, dict):
+            dir_courts = director_profile.get("courts") or {}
+            dir_companies = director_profile.get("affiliates") or {}
+            dir_flags = director_profile.get("riskFlags") or []
+            enrichment = enriched.get("enrichment") or {}
+            ind_key = resolve_individual_courts_key(enriched, enrichment=enrichment)
+            ind_cases = (
+                (enriched.get("individualCourts") or {}).get(ind_key)
+                if ind_key
+                else None
+            )
+            ind_count = len(ind_cases) if isinstance(ind_cases, list) else 0
+            director_text = (
+                f"Другие компании директора: {_format_director_companies(dir_companies)}\n"
+                f"Персональные дела (individualCourts/Adata): {ind_count} дел"
+                + (f" (ИИН {ind_key})" if ind_key else "")
+                + "\n"
+                f"Агрегат профиля Adata (не персональный список): активных "
+                f"{dir_courts.get('activeCases', 0)}, сумма {dir_courts.get('totalAmount', 0)} тг\n"
+                f"Риск-флаги: {'; '.join(str(f) for f in dir_flags) or 'нет'}"
+            )
         parts.append(f"\n## ПРОФИЛЬ ДИРЕКТОРА (по ИИН через Adata)\n{director_text}")
         _log_section("ПРОФИЛЬ ДИРЕКТОРА", director_text)
 
