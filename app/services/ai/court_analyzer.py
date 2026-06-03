@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 from app.core.config import settings
+from app.services.ai.langfuse_setup import ai_trace, create_async_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -47,24 +48,29 @@ _FALLBACK = {
 }
 
 
-async def analyze_court_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def analyze_court_cases(
+    cases: list[dict[str, Any]],
+    *,
+    iin: str = "",
+) -> list[dict[str, Any]]:
     """Add aiAnalysis field to each court case that lacks one. Returns updated list."""
     if not settings.openai_api_key or not cases:
         return cases
 
     updated: list[dict[str, Any]] = []
-    for case in cases:
-        if case.get("aiAnalysis"):
-            updated.append(case)
-            continue
+    with ai_trace(name="court_analyze", iin=iin):
+        for idx, case in enumerate(cases):
+            if case.get("aiAnalysis"):
+                updated.append(case)
+                continue
 
-        text = _case_to_text(case)
-        if not text:
-            updated.append(case)
-            continue
+            text = _case_to_text(case)
+            if not text:
+                updated.append(case)
+                continue
 
-        analysis = await _classify_single(text)
-        updated.append({**case, "aiAnalysis": analysis})
+            analysis = await _classify_single(text, case_index=idx)
+            updated.append({**case, "aiAnalysis": analysis})
 
     return updated
 
@@ -82,16 +88,12 @@ def _case_to_text(case: dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
-async def _classify_single(text: str) -> dict[str, Any]:
+async def _classify_single(text: str, *, case_index: int = 0) -> dict[str, Any]:
     try:
-        from openai import AsyncOpenAI
-
-        client_kwargs: dict[str, Any] = {"api_key": settings.openai_api_key}
-        if settings.openai_base_url:
-            client_kwargs["base_url"] = settings.openai_base_url
-        client = AsyncOpenAI(**client_kwargs)
+        client = create_async_openai_client()
 
         response = await client.chat.completions.create(
+            name=f"court_case_{case_index + 1}",
             model=settings.openai_model,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},

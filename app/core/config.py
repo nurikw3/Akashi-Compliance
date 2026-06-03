@@ -91,6 +91,13 @@ class Settings:
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+    langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+    langfuse_base_url: str = os.getenv(
+        "LANGFUSE_BASE_URL",
+        os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+    )
+
     lseg_client_id: str = os.getenv("LSEG_CLIENT_ID", "")
     lseg_client_secret: str = os.getenv("LSEG_CLIENT_SECRET", "")
     lseg_group_id: str = os.getenv("LSEG_GROUP_ID", "")

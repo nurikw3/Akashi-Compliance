@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from app.core.config import settings
 from app.services.ai.context import build_case_context, build_short_context
+from app.services.ai.langfuse_setup import ai_trace, create_async_openai_client
 
 AiMode = Literal["openai", "template"]
 
@@ -84,6 +85,7 @@ class AIService:
                     context=context,
                     history=history or [],
                     case_id=case_id,
+                    iin=iin,
                 )
                 return reply, "openai"
             except Exception:
@@ -246,21 +248,23 @@ class AIService:
             conclusion=None,
             data_sources=data_sources,
         )
-        client = self._client()
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"{context}\n\n"
-                        "Составь итоговое заключение комплаенс-офицера: вывод, факты, риски, рекомендация."
-                    ),
-                },
-            ],
-            temperature=0.3,
-        )
+        with ai_trace(name="conclusion", iin=iin):
+            client = self._client()
+            response = await client.chat.completions.create(
+                name="conclusion",
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"{context}\n\n"
+                            "Составь итоговое заключение комплаенс-офицера: вывод, факты, риски, рекомендация."
+                        ),
+                    },
+                ],
+                temperature=0.3,
+            )
         return response.choices[0].message.content or self._template_conclusion(
             company_name, enrichment, assessment
         )
@@ -273,6 +277,7 @@ class AIService:
         context: str,
         history: list[dict[str, str]],
         case_id: str,
+        iin: str = "",
     ) -> str:
         import json as _json
 
@@ -291,59 +296,59 @@ class AIService:
 
         messages.append({"role": "user", "content": message})
 
-        client = self._client()
+        with ai_trace(name="chat", iin=iin, case_id=case_id):
+            client = self._client()
+            turn = 0
 
-        for _ in range(3):
+            for _ in range(3):
+                turn += 1
+                response = await client.chat.completions.create(
+                    name=f"chat_turn_{turn}",
+                    model=settings.openai_model,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    max_tokens=1500,
+                    temperature=0.2,
+                )
+
+                choice = response.choices[0]
+
+                if choice.finish_reason == "stop" or not choice.message.tool_calls:
+                    content = choice.message.content
+                    if not content:
+                        raise ValueError("Empty OpenAI response")
+                    return content
+
+                messages.append(choice.message)
+
+                for tool_call in choice.message.tool_calls:
+                    try:
+                        args = _json.loads(tool_call.function.arguments)
+                    except Exception:
+                        args = {}
+
+                    result = execute_tool(tool_call.function.name, args, case_id)
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result,
+                        }
+                    )
+
             response = await client.chat.completions.create(
+                name=f"chat_turn_{turn + 1}",
                 model=settings.openai_model,
                 messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
                 max_tokens=1500,
                 temperature=0.2,
             )
-
-            choice = response.choices[0]
-
-            if choice.finish_reason == "stop" or not choice.message.tool_calls:
-                content = choice.message.content
-                if not content:
-                    raise ValueError("Empty OpenAI response")
-                return content
-
-            messages.append(choice.message)
-
-            for tool_call in choice.message.tool_calls:
-                try:
-                    args = _json.loads(tool_call.function.arguments)
-                except Exception:
-                    args = {}
-
-                result = execute_tool(tool_call.function.name, args, case_id)
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result,
-                    }
-                )
-
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=messages,
-            max_tokens=1500,
-            temperature=0.2,
-        )
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("Empty OpenAI response")
-        return content
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError("Empty OpenAI response")
+            return content
 
     def _client(self) -> Any:
-        from openai import AsyncOpenAI
-
-        client_kwargs: dict[str, Any] = {"api_key": settings.openai_api_key}
-        if settings.openai_base_url:
-            client_kwargs["base_url"] = settings.openai_base_url
-        return AsyncOpenAI(**client_kwargs)
+        return create_async_openai_client()

@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo } from 'react'
+import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
@@ -13,6 +14,7 @@ import {
   ThumbsUp,
   TriangleAlert,
   Info,
+  ExternalLink,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -173,7 +175,7 @@ function wrapTakeawayBlocks(text: string): string {
   let trailingEmpty = 0
 
   for (const line of lines) {
-    const isTakeawayHeading = /^###\s+(Краткое сведение|Вердикт ИИ)/.test(line)
+    const isTakeawayHeading = /^###\s+(Краткое сведение|Вердикт ИИ|Вывод ИИ)/.test(line)
     const isNewSection = /^#{1,2}\s+/.test(line)
 
     if (isTakeawayHeading) {
@@ -212,6 +214,7 @@ function processContent(content: string): string {
 
 function SectionMarkdown({ content }: { content: string }) {
   const processed = useMemo(() => processContent(content), [content])
+  const router = useRouter()
 
   return (
     <div className="report-section-content">
@@ -220,7 +223,7 @@ function SectionMarkdown({ content }: { content: string }) {
         components={{
           h3: ({ children }) => {
             const text = String(children ?? '')
-            const isTakeaway = /Краткое сведение|Вердикт ИИ/.test(text)
+            const isTakeaway = /Краткое сведение|Вердикт ИИ|Вывод ИИ/.test(text)
             if (isTakeaway) {
               return (
                 <p className="text-[10.5px] font-bold uppercase tracking-widest text-neutral-400 mb-2 mt-0">
@@ -286,6 +289,17 @@ function SectionMarkdown({ content }: { content: string }) {
                 >
                   {children}
                 </span>
+              )
+            }
+            if (href?.startsWith('/cases/')) {
+              return (
+                <button
+                  onClick={() => router.push(href)}
+                  className="inline-flex items-center gap-1 text-violet-700 font-medium text-[13px] hover:text-violet-900 hover:underline underline-offset-2 transition-colors"
+                >
+                  {children}
+                  <ExternalLink className="w-3 h-3 opacity-60" />
+                </button>
               )
             }
             return (

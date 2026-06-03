@@ -427,7 +427,7 @@ async def process_case(case_id: str) -> None:
         # LLM-classify court cases (enriches courts.cases[].aiAnalysis)
         courts = enrichment.get("courts") or {}
         if courts.get("cases"):
-            courts["cases"] = await analyze_court_cases(courts["cases"])
+            courts["cases"] = await analyze_court_cases(courts["cases"], iin=iin)
             enrichment["courts"] = courts
 
         # LSEG screening: company + director
