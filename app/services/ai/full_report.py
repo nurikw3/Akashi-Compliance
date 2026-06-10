@@ -1556,16 +1556,202 @@ def _build_material_facts_block(row: dict[str, Any]) -> str:
 
 # ─── Физические лица ────────────────────────────────────────────────────────
 
-def _build_individuals_section(row: dict[str, Any]) -> str:
-    """Раздел «Физические лица»: директор + учредители (флаги, счётчики дел)."""
+_COMPANY_NAME_MARKERS = frozenset(
+    {
+        "ТОО", "АО", "ПАО", "ЗАО", "ОАО", "ПК", "ООО", "ТД", "РГП", "ГУ", "КГП",
+        "КХ", "ИП", "ПУБЛИЧНОЕ", "АКЦИОНЕРНОЕ", "LLC", "LLP", "LTD", "INC", "GMBH",
+        "CORP", "CO",
+    }
+)
+
+
+def _looks_like_company(name: Any) -> bool:
+    up = str(name or "").strip().upper()
+    if not up:
+        return False
+    if '"' in up or "«" in up:
+        return True
+    first = up.split()[0] if up.split() else ""
+    return first.strip(".") in _COMPANY_NAME_MARKERS
+
+
+def _digits12(value: Any) -> str | None:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return digits if len(digits) == 12 else None
+
+
+def _lseg_person_signal(name: Any, enriched: dict[str, Any]) -> str:
+    """Санкционный / PEP-сигнал по физлицу из lsegExtended (совпадение по имени)."""
+    name_key = _normalize_person_name_key(name)
+    ext = enriched.get("lsegExtended") or {}
+    if not name_key or not isinstance(ext, dict):
+        return ""
+    for key, ent in ext.items():
+        if not isinstance(ent, dict):
+            continue
+        if name_key not in (
+            _normalize_person_name_key(ent.get("name")),
+            _normalize_person_name_key(key),
+        ):
+            continue
+        if ent.get("isOnSanctionList"):
+            lists = [str(x) for x in (ent.get("sanctionLists") or []) if x][:3]
+            return "под санкциями LSEG" + (f" ({', '.join(lists)})" if lists else "")
+        hits = ent.get("hits") or []
+        if any(isinstance(h, dict) and h.get("isPep") for h in hits):
+            return "PEP-совпадение (LSEG)"
+        if hits:
+            return "совпадение в списке наблюдения (LSEG)"
+    return ""
+
+
+def _collect_report_individuals(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Физлица из всех источников с ролями, флагами и санкционным сигналом.
+
+    Источники: директор (Adata), бенефициары/учредители (beneficiary +
+    relationExtended), директора L1-аффилиатов. Дедуп по ИИН/имени, роли
+    объединяются. К каждому подмешиваются флаги individualProfiles и сигнал LSEG.
+    """
     enriched = row.get("enriched_data") or {}
-    individuals = _collect_individual_flags(enriched)
-    if not individuals:
-        return "Профили физлиц (директор/учредители) не загружены."
-    lines: list[str] = []
-    for item in individuals:
-        lines.append(_format_individual_profile_line(item))
-    return "\n".join(lines)
+    enrichment = enriched.get("enrichment") or {}
+    flags = {it["iin"]: it for it in _collect_individual_flags(enriched)}
+
+    people: dict[str, dict[str, Any]] = {}
+
+    def _add(name: Any, iin: Any, role: str) -> None:
+        clean = _clean_person_display_name(name)
+        if not clean or _looks_like_company(clean):
+            return
+        iin12 = _digits12(iin)
+        nkey = _normalize_person_name_key(clean)
+        key = iin12 or nkey
+        if not key:
+            return
+        p = people.get(key)
+        if p is None:
+            p = {"name": clean, "iin": iin12, "name_key": nkey, "roles": []}
+            people[key] = p
+        if iin12 and not p["iin"]:
+            p["iin"] = iin12
+        if role and role not in p["roles"]:
+            p["roles"].append(role)
+
+    ci = enrichment.get("companyInfo") or {}
+    _add(ci.get("director"), ci.get("director_iin"), "директор")
+
+    for b in enriched.get("beneficiary") or []:
+        if not isinstance(b, dict):
+            continue
+        if str(b.get("counterparty_type") or "").strip().lower() != "individual":
+            continue
+        btype = str(b.get("type") or "бенефициар").strip().lower()
+        share = b.get("share") or b.get("ownershipShare")
+        role = btype + (f", доля {share}" if _is_populated(share) else "")
+        _add(b.get("name") or b.get("short_name"), b.get("biin") or b.get("iin"), role)
+
+    rel = enriched.get("relationExtended") or {}
+    if isinstance(rel, dict):
+        for f in rel.get("affiliation_by_founder") or rel.get("affiliationByFounder") or []:
+            if isinstance(f, dict):
+                _add(
+                    f.get("founder_name"),
+                    f.get("founder_biin") or f.get("founder_biin_formatted"),
+                    "учредитель",
+                )
+
+    for bin_val, prof in (enriched.get("affiliateProfiles") or {}).items():
+        if not isinstance(prof, dict) or not prof.get("director"):
+            continue
+        comp = prof.get("name") or ""
+        # Skip person-as-company entries (an individual's IIN that surfaced as an
+        # "affiliate") — their "director аффилиата «<own name>»" role is noise.
+        if not _looks_like_company(comp):
+            continue
+        _add(
+            prof.get("director"),
+            prof.get("director_iin"),
+            f"директор аффилиата «{_short_text(comp, max_len=40)}»",
+        )
+
+    # Fallback: never drop a deeply-profiled person (individualProfiles) just
+    # because their role link wasn't resolved — add them with no explicit role.
+    for it in flags.values():
+        _add(it.get("name"), it.get("iin"), "")
+
+    result: list[dict[str, Any]] = []
+    for p in people.values():
+        prof_item = flags.get(p["iin"]) if p["iin"] else None
+        if prof_item is None:
+            for it in flags.values():
+                if _normalize_person_name_key(it.get("name")) == p["name_key"]:
+                    prof_item = it
+                    break
+        result.append(
+            {**p, "profile": prof_item, "lseg": _lseg_person_signal(p["name"], enriched)}
+        )
+
+    def _rank(p: dict[str, Any]) -> int:
+        score = 0
+        if p["lseg"]:
+            score += 100
+        prof = p.get("profile") or {}
+        if prof.get("critical_flags"):
+            score += 60
+        if prof.get("other_flags"):
+            score += 20
+        if prof.get("pep"):
+            score += 30
+        if "директор" in p["roles"]:
+            score += 10
+        if prof:
+            score += 5
+        return -score
+
+    result.sort(key=_rank)
+    return result[:20]
+
+
+def _format_report_individual(p: dict[str, Any]) -> str:
+    head = [f"**{p['name']}**"]
+    if p.get("iin"):
+        head.append(f"ИИН {p['iin']}")
+    line = "- " + " · ".join(head)
+    if p["roles"]:
+        line += f"\n  - Роль: {'; '.join(p['roles'])}"
+    if p["lseg"]:
+        line += f"\n  - ⚠ LSEG: {p['lseg']}"
+    prof = p.get("profile") or {}
+    bio: list[str] = []
+    if prof.get("age"):
+        bio.append(f"{prof['age']} лет")
+    if prof.get("alive") is False:
+        bio.append("умер")
+    if prof.get("pep"):
+        bio.append("ПДЛ (публичное должностное лицо)")
+    if bio:
+        line += f"\n  - {' · '.join(bio)}"
+    fl = list(prof.get("critical_flags") or []) + list(prof.get("other_flags") or [])
+    if fl:
+        line += f"\n  - Флаги: {'; '.join(fl)}"
+    c = prof.get("courts") or {}
+    total = (c.get("civil", 0) or 0) + (c.get("criminal", 0) or 0) + (c.get("admin", 0) or 0)
+    if total:
+        line += (
+            f"\n  - Дела (счётчик Adata): гражданских {c.get('civil', 0)}, "
+            f"уголовных {c.get('criminal', 0)}, административных {c.get('admin', 0)}"
+        )
+    elif p.get("iin") and not prof:
+        line += "\n  - Профиль Adata не загружен (счётчики дел недоступны)"
+    return line
+
+
+def _build_individuals_section(row: dict[str, Any]) -> str:
+    """Раздел «Физические лица»: директор, учредители, бенефициары, директора
+    аффилиатов — с ролью, флагами, счётчиком дел и санкционным сигналом LSEG."""
+    people = _collect_report_individuals(row)
+    if not people:
+        return "Физические лица (директор/учредители/бенефициары) не загружены."
+    return "\n".join(_format_report_individual(p) for p in people)
 
 
 # ─── Карта покрытия данных ──────────────────────────────────────────────────

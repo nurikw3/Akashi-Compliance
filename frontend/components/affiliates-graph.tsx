@@ -1056,8 +1056,12 @@ export function AffiliatesGraph({
             hiddenTotal={hiddenTotal}
           />
         </>
-      ) : isBuilding ? (
-        <LoadingGif message="Строим дерево связей…" size={140} className="py-12" />
+      ) : isBuilding || treeStatus === 'pending' ? (
+        <LoadingGif
+          message={isBuilding ? 'Строим дерево связей…' : 'Дерево связей скоро построится…'}
+          size={140}
+          className="py-12"
+        />
       ) : (
         <p className="text-sm text-neutral-500 py-8 text-center">
           {source === 'adata'

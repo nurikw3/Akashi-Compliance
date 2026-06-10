@@ -161,6 +161,13 @@ export interface Case {
   name: string
   iinBin: string
   status: 'pending' | 'enriching' | 'ready' | 'error'
+  /**
+   * Progress of the deferred heavy enrichment (affiliate / director / individual
+   * profiles, individual courts, LSEG extended). `pending` = core facts are ready
+   * but these sections are still loading in the background; `ready` = done.
+   * `undefined` on legacy cases (treated as already complete).
+   */
+  deepDiveStatus?: 'pending' | 'ready' | 'error'
   createdAt: Date
   enrichment?: EnrichmentData
   assessment?: Assessment

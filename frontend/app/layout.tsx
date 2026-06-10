@@ -9,8 +9,12 @@ import './globals.css'
 const inter = Inter({ subsets: ['latin', 'cyrillic'] })
 
 export const metadata: Metadata = {
-  title: 'Compliance Workspace',
+  title: 'AKASHI DATA CENTER — Compliance Workspace',
   description: 'Платформа для проверки контрагентов',
+  icons: {
+    icon: '/akashi-logo.svg',
+    apple: '/akashi-logo.svg',
+  },
 }
 
 export default function RootLayout({

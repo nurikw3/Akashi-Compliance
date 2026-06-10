@@ -111,6 +111,7 @@ def case_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "individualCourtsMeta": enriched.get("individualCourtsMeta"),
         "companyCourtCases": enriched.get("companyCourtCases"),
         "individualProfiles": enriched.get("individualProfiles"),
+        "deepDiveStatus": enriched.get("deepDiveStatus"),
         "verificationLog": enriched.get("verificationLog") or [],
         "hasFullReport": bool(enriched.get("fullReport")),
         "fullReportGeneratedAt": enriched.get("fullReportGeneratedAt"),

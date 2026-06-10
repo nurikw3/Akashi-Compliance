@@ -1,0 +1,14 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AKASHI DATA CENTER">
+  <!-- Outer red hexagon (rounded corners via round stroke join) -->
+  <polygon
+    points="50,7 87.24,28.5 87.24,71.5 50,93 12.76,71.5 12.76,28.5"
+    fill="#ED1C2E" stroke="#ED1C2E" stroke-width="6" stroke-linejoin="round" />
+  <!-- Inner dark hexagon -->
+  <polygon
+    points="50,23 73.38,36.5 73.38,63.5 50,77 26.62,63.5 26.62,36.5"
+    fill="#26262B" stroke="#26262B" stroke-width="4" stroke-linejoin="round" />
+  <!-- Small white hexagon (upper-right accent) -->
+  <polygon
+    points="60,30 68.66,35 68.66,45 60,50 51.34,45 51.34,35"
+    fill="#FFFFFF" stroke="#FFFFFF" stroke-width="2.5" stroke-linejoin="round" />
+</svg>

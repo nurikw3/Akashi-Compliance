@@ -46,6 +46,12 @@ async def _run_enrichment_inline(case_id: str) -> None:
     await process_case(case_id)
 
 
+async def _run_deep_dive_inline(case_id: str) -> None:
+    from app.services.pipeline import process_case_deep_dive
+
+    await process_case_deep_dive(case_id)
+
+
 async def _run_tree_inline(case_id: str) -> None:
     from app.services.affiliate_tree import build_affiliate_tree
 
@@ -98,6 +104,14 @@ async def _schedule_tree_after_enrichment(case_id: str, *, use_taskiq: bool) -> 
 
 async def _run_enrichment_then_followups_inline(case_id: str) -> None:
     await _run_enrichment_inline(case_id)
+    # Deep-dive (affiliate/director/individual profiles + LSEG extended) runs in
+    # the background after the case is already "ready" with core facts. It must
+    # complete before the tree / AI jobs so there is only one enriched_data writer.
+    from app.models import db
+
+    row = db.get_case(case_id)
+    if row and row.get("status") == "ready":
+        await _run_deep_dive_inline(case_id)
     await _schedule_tree_after_enrichment(case_id, use_taskiq=False)
     await _schedule_ai_conclusion_after_enrichment(case_id, use_taskiq=False)
 

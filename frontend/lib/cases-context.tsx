@@ -88,7 +88,20 @@ export function CasesProvider({ children }: { children: ReactNode }) {
     if (!apiConnected) return
 
     const enriching = cases.filter((c) => c.status === 'enriching' || c.status === 'pending')
-    const buildingTree = cases.filter((c) => c.affiliateTree?.status === 'building')
+    // Keep polling through the whole tree lifecycle: it is 'pending' from the
+    // moment the case goes ready until build_affiliate_tree flips it to
+    // 'building' → 'ready'. Catching only 'building' could stop polling during
+    // the brief 'pending' gap and freeze the UI on a half-built case.
+    const buildingTree = cases.filter(
+      (c) =>
+        c.affiliateTree?.status === 'building' ||
+        (c.status === 'ready' && c.affiliateTree?.status === 'pending')
+    )
+    // Core facts are ready but the heavy affiliate/director/individual sections
+    // are still streaming in — keep polling until the deep-dive completes.
+    const awaitingDeepDive = cases.filter(
+      (c) => c.status === 'ready' && c.deepDiveStatus === 'pending'
+    )
     const awaitingConclusion = cases.filter(
       (c) => c.status === 'ready' && c.enrichment && !c.conclusion
     )
@@ -101,6 +114,7 @@ export function CasesProvider({ children }: { children: ReactNode }) {
     for (const c of [
       ...enriching,
       ...buildingTree,
+      ...awaitingDeepDive,
       ...awaitingConclusion,
       ...awaitingChat,
     ]) {

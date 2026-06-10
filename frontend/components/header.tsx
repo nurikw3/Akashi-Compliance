@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { FolderOpen, LogOut, Shield, Upload } from 'lucide-react'
+import { FolderOpen, LogOut, Upload } from 'lucide-react'
 import { clearAuth } from '@/lib/auth'
 
 export function Header() {
@@ -24,11 +24,13 @@ export function Header() {
     <header className="bg-white border-b border-neutral-200">
       <div className="max-w-6xl mx-auto px-4 sm:px-6">
         <div className="flex items-center justify-between h-16">
-          <Link href="/" className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center">
-              <Shield className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-semibold text-neutral-900">Compliance Workspace</span>
+          <Link href="/" className="flex items-center gap-2.5">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/akashi-logo.svg" alt="AKASHI DATA CENTER" className="w-9 h-9" />
+            <span className="flex flex-col leading-tight">
+              <span className="font-semibold text-neutral-900">AKASHI DATA CENTER</span>
+              <span className="text-xs text-neutral-500">Compliance Workspace</span>
+            </span>
           </Link>
 
           <nav className="flex items-center gap-1">

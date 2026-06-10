@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { Loader2, Lock } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { checkHealth } from '@/lib/api'
 import { clearAuth, isAuthenticated, setAuth, tryAuthFromHash } from '@/lib/auth'
 
@@ -79,11 +79,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
           className="w-full max-w-sm bg-white border border-neutral-200 rounded-2xl p-8 shadow-sm"
         >
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-10 h-10 rounded-xl bg-neutral-900 text-white flex items-center justify-center">
-              <Lock className="w-5 h-5" />
-            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/akashi-logo.svg" alt="AKASHI DATA CENTER" className="w-10 h-10" />
             <div>
-              <h1 className="text-lg font-semibold text-neutral-900">Compliance Workspace</h1>
+              <h1 className="text-lg font-semibold text-neutral-900">AKASHI DATA CENTER</h1>
               <p className="text-sm text-neutral-500">Вход в систему</p>
             </div>
           </div>

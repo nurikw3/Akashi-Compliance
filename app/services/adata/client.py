@@ -209,6 +209,23 @@ async def _merge_company_info_court_pages(
     return {**data, "court_cases": merged}
 
 
+def _poll_delays(attempts: int, cap: float) -> list[float]:
+    """Fast-start backoff schedule for Adata job polling.
+
+    Adata jobs are usually ready within the first few seconds, but the old
+    behaviour slept a flat ``cap`` (e.g. 3s) *before every check*, so even a
+    job ready in 1s paid 3s minimum and most paid 6-9s. Here we poll quickly
+    at first (0.6s) and grow toward ``cap`` so fast jobs return fast while slow
+    jobs stay polite. ``cap`` is the configured ``ADATA_POLL_DELAY_SECONDS``.
+    """
+    delays: list[float] = []
+    d = min(0.6, cap)
+    for _ in range(max(attempts, 1)):
+        delays.append(min(d, cap))
+        d *= 1.4
+    return delays
+
+
 async def _poll(
     client: httpx.AsyncClient,
     job_token: str,
@@ -229,8 +246,8 @@ async def _poll(
     delay = delay or settings.adata_poll_delay_seconds
     check_url = _check_url()
     last_data: dict[str, Any] | None = None
-    for _ in range(attempts):
-        await asyncio.sleep(delay)
+    for sleep_for in _poll_delays(attempts, delay):
+        await asyncio.sleep(sleep_for)
         response = await client.get(check_url, params={"token": job_token})
         response.raise_for_status()
         data = response.json()
@@ -254,12 +271,20 @@ async def _get_endpoint(
     return await _poll(client, payload["token"])
 
 
-async def fetch_company_info(bin_value: str, *, case_id: str | None = None) -> dict[str, Any]:
-    """Start company info job and poll until ``data`` is ready; return that object."""
+async def fetch_company_info(
+    bin_value: str, *, case_id: str | None = None, merge_court_pages: bool = True
+) -> dict[str, Any]:
+    """Start company info job and poll until ``data`` is ready; return that object.
+
+    ``merge_court_pages=False`` skips the sequential per-page court-case pagination
+    — used for affiliate/director *summary* profiles, which only need aggregated
+    court totals, not the detailed paginated cases (saves several round-trips). The
+    lighter result is cached under a separate key so it never shadows a full fetch.
+    """
     if not settings.adata_token:
         raise AdataError("ADATA_TOKEN is not configured")
 
-    cache_key = adata_key("info", bin_value)
+    cache_key = adata_key("info" if merge_court_pages else "info_summary", bin_value)
     cached = await get_cached(cache_key)
     if cached is not None:
         if case_id:
@@ -300,7 +325,8 @@ async def fetch_company_info(bin_value: str, *, case_id: str | None = None) -> d
         data = result.get("data")
         if not isinstance(data, dict):
             raise AdataError("Company info poll returned no data")
-        data = await _merge_company_info_court_pages(client, payload["token"], data)
+        if merge_court_pages:
+            data = await _merge_company_info_court_pages(client, payload["token"], data)
         await set_cached(cache_key, data, ADATA_TTL)
         if case_id:
             append_case_event(
@@ -566,8 +592,8 @@ async def _poll_with_url(
     """Like ``_poll`` but accepts an explicit *check_url* instead of the default info/check."""
     attempts = attempts or settings.adata_poll_attempts
     delay = delay or settings.adata_poll_delay_seconds
-    for _ in range(attempts):
-        await asyncio.sleep(delay)
+    for sleep_for in _poll_delays(attempts, delay):
+        await asyncio.sleep(sleep_for)
         response = await client.get(check_url, params={"token": job_token})
         response.raise_for_status()
         data = response.json()
@@ -674,8 +700,8 @@ async def fetch_individual_info(
 
             attempts = settings.adata_poll_attempts
             delay = settings.adata_poll_delay_seconds
-            for _ in range(attempts):
-                await asyncio.sleep(delay)
+            for sleep_for in _poll_delays(attempts, delay):
+                await asyncio.sleep(sleep_for)
                 check = await client.get(check_url, params={"token": job_token})
                 check.raise_for_status()
                 result = check.json()
@@ -836,8 +862,8 @@ async def _poll_individual_court_cases(
     attempts = settings.adata_poll_attempts
     delay = settings.adata_poll_delay_seconds
     ready_data: dict[str, Any] | None = None
-    for _ in range(attempts):
-        await asyncio.sleep(delay)
+    for sleep_for in _poll_delays(attempts, delay):
+        await asyncio.sleep(sleep_for)
         check = await client.get(check_url, params={"token": job_token, "page": 1})
         check.raise_for_status()
         result = check.json()
@@ -1066,8 +1092,8 @@ async def _poll_company_court_cases(
     attempts = settings.adata_poll_attempts
     delay = settings.adata_poll_delay_seconds
     ready_data: dict[str, Any] | None = None
-    for _ in range(attempts):
-        await asyncio.sleep(delay)
+    for sleep_for in _poll_delays(attempts, delay):
+        await asyncio.sleep(sleep_for)
         check = await client.get(check_url, params={"token": job_token, "page": 1})
         check.raise_for_status()
         result = check.json()

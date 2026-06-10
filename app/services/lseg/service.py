@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 
 _client = LsegClient()
 
+# Flips to True after the first 403 MEDIA_CHECK_UNAVAILABLE so we stop paying a
+# guaranteed-failing round-trip per organisation when the account lacks the
+# Media-Check entitlement. Reset on process restart.
+_media_check_unavailable = False
+
 
 def is_available() -> bool:
     return bool(settings.lseg_client_id and settings.lseg_client_secret and settings.lseg_group_id)
@@ -36,6 +41,7 @@ async def _screen_entity(name: str, entity_type: str) -> dict[str, Any] | None:
     Does NOT interact with the cache — callers are responsible for cache
     read/write so this function can be used freely in gather() chains.
     """
+    global _media_check_unavailable
     try:
         case_resp = await _client.screen_sync(name, entity_type)
     except Exception as exc:
@@ -57,12 +63,20 @@ async def _screen_entity(name: str, entity_type: str) -> dict[str, Any] | None:
         except Exception as exc:
             logger.warning("LSEG get_results failed for %s: %s", name, exc)
 
-        if entity_type == "ORGANISATION":
+        if entity_type == "ORGANISATION" and not _media_check_unavailable:
             try:
                 media_resp = await _client.get_media_check(case_id)
                 media_articles = _extract_media(media_resp)
             except Exception as exc:
-                logger.warning("LSEG media_check failed for %s: %s", name, exc)
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status == 403:
+                    _media_check_unavailable = True
+                    logger.info(
+                        "LSEG media-check entitlement missing (403) — skipping "
+                        "media-check for subsequent entities this run"
+                    )
+                else:
+                    logger.warning("LSEG media_check failed for %s: %s", name, exc)
 
             try:
                 rating_resp = await _client.get_rating(case_id)

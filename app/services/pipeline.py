@@ -163,8 +163,13 @@ def _company_data_from_info(iin: str, info_data: dict[str, Any], name_hint: str 
 
 
 async def _fetch_enrichment_profile(iin: str, name_hint: str = "") -> dict[str, Any]:
-    """Fetch Adata /info for *iin* and return normalized enrichment dict."""
-    info_data = await fetch_company_info(iin)
+    """Fetch Adata /info for *iin* and return normalized enrichment dict.
+
+    Used for affiliate/director *summary* profiles only, so we skip the detailed
+    court-case pagination (``merge_court_pages=False``) — the summary needs just
+    aggregated court totals, not the per-page case detail.
+    """
+    info_data = await fetch_company_info(iin, merge_court_pages=False)
     company = _company_data_from_info(iin, info_data, name_hint=name_hint)
     display = name_hint or company.name or ""
     return company_data_to_enrichment(display, company)
@@ -425,32 +430,49 @@ async def process_case(case_id: str) -> None:
             outcome={"status": "ok"},
         )
 
-        # LLM-classify court cases (enriches courts.cases[].aiAnalysis)
         courts = enrichment.get("courts") or {}
-        if courts.get("cases"):
-            courts["cases"] = await analyze_court_cases(courts["cases"], iin=iin)
-            enrichment["courts"] = courts
-
-        # LSEG screening: company + director
         director = enrichment.get("companyInfo", {}).get("director")
-        lseg_data = await lseg_service.screen(
-            company_name=screen_name,
-            director=director,
-            iin=iin,
-            case_id=case_id,
-        )
+        main_bin = _normalize_iin(iin) or iin
 
-        affiliate_tree = existing.get("affiliateTree")
+        async def _maybe_analyze_courts() -> list | None:
+            if courts.get("cases"):
+                return await analyze_court_cases(courts["cases"], iin=iin)
+            return None
 
-        # Parallel extended data: trustworthy-plus, beneficiary, non-residents, relation
-        trustworthy_plus, beneficiary, non_residents, relation_extended = await asyncio.gather(
+        # ── Core wave: court analysis + LSEG company screen + BIN-only Adata
+        # fetches. Everything here needs only the main BIN / core enrichment, so
+        # the case reaches "ready" fast; affiliate / director / individual
+        # profiles are deferred to process_case_deep_dive().
+        (
+            analyzed_court_cases,
+            lseg_data,
+            trustworthy_plus,
+            beneficiary,
+            non_residents,
+            relation_extended,
+            company_court_cases,
+        ) = await asyncio.gather(
+            _maybe_analyze_courts(),
+            lseg_service.screen(company_name=screen_name, director=director, iin=iin, case_id=case_id),
             fetch_trustworthy_plus(iin, case_id=case_id),
             fetch_beneficiary(iin, case_id=case_id),
             fetch_non_resident_affiliations(iin, case_id=case_id),
             fetch_relation_extended(iin, case_id=case_id),
+            fetch_company_court_cases(main_bin, case_id=case_id),
             return_exceptions=True,
         )
 
+        # Unpack / handle exceptions from the core wave
+        if isinstance(analyzed_court_cases, BaseException):
+            logger.warning("analyze_court_cases failed: %s", analyzed_court_cases)
+            analyzed_court_cases = None
+        if analyzed_court_cases is not None:
+            courts["cases"] = analyzed_court_cases
+            enrichment["courts"] = courts
+
+        if isinstance(lseg_data, BaseException):
+            logger.warning("lseg.screen failed for %s: %s", case_id, lseg_data)
+            lseg_data = None
         if isinstance(trustworthy_plus, BaseException):
             logger.warning("fetch_trustworthy_plus failed for %s: %s", case_id, trustworthy_plus)
             trustworthy_plus = {}
@@ -463,127 +485,10 @@ async def process_case(case_id: str) -> None:
         if isinstance(relation_extended, BaseException):
             logger.warning("fetch_relation_extended failed for %s: %s", case_id, relation_extended)
             relation_extended = {}
+        if isinstance(company_court_cases, BaseException):
+            logger.warning("fetch_company_court_cases failed: %s", company_court_cases)
+            company_court_cases = []
 
-        partial_enriched = {
-            "enrichment": enrichment,
-            "beneficiary": beneficiary if isinstance(beneficiary, list) else [],
-            "nonResidents": non_residents if isinstance(non_residents, dict) else {},
-        }
-        unique_targets = _build_lseg_extended_targets(partial_enriched)
-        affiliates_data = enrichment.get("affiliates") or {}
-
-        lseg_extended = await _run_lseg_extended_screening(case_id, unique_targets)
-        if unique_targets and not lseg_extended and not lseg_service.is_available():
-            logger.warning(
-                "lsegExtended empty for %s: %d foreign-affiliate targets but LSEG is not configured",
-                case_id,
-                len(unique_targets),
-            )
-        partial_enriched_for_iin = {
-            "enrichment": enrichment,
-            "relationExtended": relation_extended if isinstance(relation_extended, dict) else {},
-            "affiliateTree": affiliate_tree if isinstance(affiliate_tree, dict) else {},
-        }
-        director_iin = _extract_director_iin(enrichment, partial_enriched_for_iin)
-        director_profile: dict[str, Any] = {}
-        if director_iin:
-            try:
-                director_profile = await _fetch_enrichment_profile(
-                    director_iin,
-                    name_hint=str(enrichment.get("companyInfo", {}).get("director") or ""),
-                )
-                logger.info("Director profile fetched for IIN %s", director_iin)
-                existing = add_event_to_enriched(
-                    existing,
-                    provider="Adata",
-                    action="director_profile",
-                    subject={"type": "IIN", "value": director_iin},
-                    request={"endpoint": "/company/info (+ fallbacks)", "params": {"iinBin": director_iin}},
-                    outcome={"status": "ok"},
-                )
-            except Exception as exc:
-                logger.warning("Director profile fetch failed: %s", exc)
-                director_profile = {}
-                existing = add_event_to_enriched(
-                    existing,
-                    provider="Adata",
-                    action="director_profile",
-                    subject={"type": "IIN", "value": director_iin},
-                    request={"endpoint": "/company/info (+ fallbacks)", "params": {"iinBin": director_iin}},
-                    outcome={"status": "error", "message": str(exc)[:200]},
-                )
-
-        main_bin = _normalize_iin(iin) or iin
-        affiliate_bins: list[str] = []
-        seen_bins: set[str] = {main_bin} if main_bin else set()
-        for comp in (enrichment.get("affiliates") or {}).get("companies") or []:
-            bin_val = _normalize_iin(comp.get("iinBin") or comp.get("bin"))
-            if not bin_val or bin_val in seen_bins:
-                continue
-            seen_bins.add(bin_val)
-            affiliate_bins.append(bin_val)
-            if len(affiliate_bins) >= _MAX_AFFILIATE_PROFILES:
-                break
-
-        affiliate_profiles: dict[str, Any] = {}
-        if affiliate_bins:
-            results = await asyncio.gather(
-                *[_build_affiliate_profile(bin_val) for bin_val in affiliate_bins],
-                return_exceptions=True,
-            )
-            for bin_val, result in zip(affiliate_bins, results):
-                if isinstance(result, BaseException):
-                    logger.warning("Affiliate profile failed for %s: %s", bin_val, result)
-                elif isinstance(result, dict):
-                    affiliate_profiles[bin_val] = result
-
-        individual_courts, individual_courts_meta = await _fetch_individual_courts_for_case(
-            enrichment,
-            affiliate_profiles,
-            main_bin,
-            case_id=case_id,
-        )
-
-        company_court_cases = await fetch_company_court_cases(
-            main_bin, case_id=case_id
-        )
-
-        # Fetch individual info for director + founders (physical persons)
-        individual_profiles: dict[str, dict[str, Any]] = {}
-        founder_iins: list[str] = []
-        for person in (enrichment.get("affiliates") or {}).get("individuals") or []:
-            p_iin = _normalize_iin(person.get("iin"))
-            if p_iin and not person.get("is_company"):
-                founder_iins.append(p_iin)
-        director_iin = _normalize_iin(
-            enrichment.get("companyInfo", {}).get("director_iin")
-        )
-        all_person_iins: list[str] = []
-        seen_person: set[str] = set()
-        for candidate in [director_iin, *founder_iins]:
-            if candidate and candidate not in seen_person:
-                seen_person.add(candidate)
-                all_person_iins.append(candidate)
-            if len(all_person_iins) >= 6:
-                break
-        if all_person_iins:
-            info_results = await asyncio.gather(
-                *[fetch_individual_info(p_iin, case_id=case_id) for p_iin in all_person_iins],
-                return_exceptions=True,
-            )
-            for p_iin, result in zip(all_person_iins, info_results):
-                if isinstance(result, BaseException):
-                    logger.warning("fetch_individual_info failed for %s: %s", p_iin, result)
-                elif isinstance(result, dict) and result:
-                    individual_profiles[p_iin] = result
-
-        total_individual_cases = sum(len(v) for v in individual_courts.values() if isinstance(v, list))
-        existing = add_event_to_enriched(
-            existing,
-            provider="Adata",
-            action="individual_courts:summary",
-            outcome={"status": "ok", "counts": {"iinChecked": len(individual_courts), "cases": total_individual_cases}},
-        )
         if company_court_cases:
             existing = add_event_to_enriched(
                 existing,
@@ -605,46 +510,6 @@ async def process_case(case_id: str) -> None:
                         ),
                     },
                 },
-            )
-
-        if not unique_targets:
-            nr_count = len((non_residents if isinstance(non_residents, dict) else {}).get("data") or [])
-            ben_foreign = sum(
-                1
-                for item in (beneficiary if isinstance(beneficiary, list) else [])
-                if str(item.get("counterparty_type") or item.get("counterpartyType") or "").upper() != "KZ"
-            )
-            aff_no_bin = sum(
-                1
-                for ind in (affiliates_data.get("individuals") or [])
-                if str(ind.get("name") or "").strip() and not str(ind.get("iin") or "").strip()
-            )
-            aff_foreign_co = sum(
-                1
-                for comp in (affiliates_data.get("companies") or [])
-                if str(comp.get("name") or "").strip()
-                and (
-                    not str(comp.get("iinBin") or comp.get("bin") or "").strip()
-                    or not str(comp.get("iinBin") or comp.get("bin") or "").strip().isdigit()
-                    or len(str(comp.get("iinBin") or comp.get("bin") or "").strip()) != 12
-                )
-            )
-            logger.info(
-                "lsegExtended skipped for %s (BIN %s): no LSEG targets — "
-                "nonResidents=%d, foreignBeneficiaries=%d, affiliatesNoBin=%d, foreignCompanies=%d",
-                case_id,
-                iin,
-                nr_count,
-                ben_foreign,
-                aff_no_bin,
-                aff_foreign_co,
-            )
-
-        if unique_targets and not lseg_extended and lseg_service.is_available():
-            logger.warning(
-                "lsegExtended empty for %s despite %d targets (batch returned no mappable results)",
-                case_id,
-                len(unique_targets),
             )
 
         resolved_name = _resolved_company_name(company_name, iin, enrichment)
@@ -678,13 +543,8 @@ async def process_case(case_id: str) -> None:
                 "beneficiary": beneficiary if isinstance(beneficiary, list) else [],
                 "nonResidents": non_residents if isinstance(non_residents, dict) else {"hasNonResidentFromAll": False, "data": []},
                 "relationExtended": relation_extended if isinstance(relation_extended, dict) else {},
-                "lsegExtended": lseg_extended,
-                "directorProfile": director_profile,
-                "affiliateProfiles": affiliate_profiles,
-                "individualCourts": individual_courts,
-                "individualCourtsMeta": individual_courts_meta,
                 "companyCourtCases": company_court_cases,
-                "individualProfiles": individual_profiles,
+                "deepDiveStatus": "pending",
             },
             sources=sources,
             conclusion="",
@@ -692,6 +552,227 @@ async def process_case(case_id: str) -> None:
     except Exception:
         logger.exception("Case processing failed for %s", case_id)
         db.update_case(case_id, status="error")
+
+
+async def process_case_deep_dive(case_id: str) -> None:
+    """Deferred heavy follow-up after :func:`process_case`.
+
+    Fetches affiliate / director / individual profiles, individual court cases
+    and LSEG extended screening for non-resident affiliates, merges them into
+    ``enriched_data`` and flips ``deepDiveStatus`` to ``ready``. The case is
+    already "ready" with core facts, so this runs in the background while the UI
+    shows a loading state for these sections. Chained before the tree / AI jobs
+    so there is only ever one ``enriched_data`` writer at a time.
+    """
+    row = db.get_case(case_id)
+    if row is None or row.get("status") != "ready":
+        return
+    enriched = row.get("enriched_data")
+    if not isinstance(enriched, dict):
+        return
+    enrichment = enriched.get("enrichment") or {}
+    if not enrichment:
+        db.update_case(case_id, enriched_data={**enriched, "deepDiveStatus": "ready"})
+        return
+
+    iin = row["iin"]
+    main_bin = _normalize_iin(iin) or iin
+
+    try:
+        affiliates_data = enrichment.get("affiliates") or {}
+        beneficiary = enriched.get("beneficiary") if isinstance(enriched.get("beneficiary"), list) else []
+        non_residents = enriched.get("nonResidents") if isinstance(enriched.get("nonResidents"), dict) else {}
+
+        affiliate_bins: list[str] = []
+        seen_bins: set[str] = {main_bin} if main_bin else set()
+        for comp in affiliates_data.get("companies") or []:
+            bin_val = _normalize_iin(comp.get("iinBin") or comp.get("bin"))
+            if not bin_val or bin_val in seen_bins:
+                continue
+            seen_bins.add(bin_val)
+            affiliate_bins.append(bin_val)
+            if len(affiliate_bins) >= _MAX_AFFILIATE_PROFILES:
+                break
+
+        founder_iins: list[str] = []
+        for person in affiliates_data.get("individuals") or []:
+            p_iin = _normalize_iin(person.get("iin"))
+            if p_iin and not person.get("is_company"):
+                founder_iins.append(p_iin)
+        _dir_iin_for_profiles = _normalize_iin(enrichment.get("companyInfo", {}).get("director_iin"))
+        all_person_iins: list[str] = []
+        seen_person: set[str] = set()
+        for candidate in [_dir_iin_for_profiles, *founder_iins]:
+            if candidate and candidate not in seen_person:
+                seen_person.add(candidate)
+                all_person_iins.append(candidate)
+            if len(all_person_iins) >= 6:
+                break
+
+        _director_iin_early = _extract_director_iin(enrichment, {})
+
+        async def _fetch_director_profile_early() -> tuple[str | None, dict[str, Any]]:
+            if not _director_iin_early:
+                return None, {}
+            try:
+                profile = await _fetch_enrichment_profile(
+                    _director_iin_early,
+                    name_hint=str(enrichment.get("companyInfo", {}).get("director") or ""),
+                )
+                return _director_iin_early, profile
+            except Exception as exc:
+                logger.warning("Director profile fetch failed: %s", exc)
+                return _director_iin_early, {}
+
+        async def _fetch_all_affiliate_profiles() -> dict[str, Any]:
+            if not affiliate_bins:
+                return {}
+            results = await asyncio.gather(
+                *[_build_affiliate_profile(b) for b in affiliate_bins],
+                return_exceptions=True,
+            )
+            profiles: dict[str, Any] = {}
+            for b, r in zip(affiliate_bins, results):
+                if isinstance(r, BaseException):
+                    logger.warning("Affiliate profile failed for %s: %s", b, r)
+                elif isinstance(r, dict):
+                    profiles[b] = r
+            return profiles
+
+        async def _fetch_all_individual_profiles() -> dict[str, dict[str, Any]]:
+            if not all_person_iins:
+                return {}
+            results = await asyncio.gather(
+                *[fetch_individual_info(p, case_id=case_id) for p in all_person_iins],
+                return_exceptions=True,
+            )
+            profiles: dict[str, dict[str, Any]] = {}
+            for p, r in zip(all_person_iins, results):
+                if isinstance(r, BaseException):
+                    logger.warning("fetch_individual_info failed for %s: %s", p, r)
+                elif isinstance(r, dict) and r:
+                    profiles[p] = r
+            return profiles
+
+        # ── Deep wave A: director + affiliate + individual profiles in parallel ──
+        (
+            _director_iin_and_profile,
+            affiliate_profiles,
+            individual_profiles,
+        ) = await asyncio.gather(
+            _fetch_director_profile_early(),
+            _fetch_all_affiliate_profiles(),
+            _fetch_all_individual_profiles(),
+            return_exceptions=True,
+        )
+
+        if isinstance(_director_iin_and_profile, BaseException):
+            logger.warning("director profile fetch failed: %s", _director_iin_and_profile)
+            _director_iin_and_profile = (None, {})
+        if isinstance(affiliate_profiles, BaseException):
+            logger.warning("affiliate profiles failed: %s", affiliate_profiles)
+            affiliate_profiles = {}
+        if isinstance(individual_profiles, BaseException):
+            logger.warning("individual profiles failed: %s", individual_profiles)
+            individual_profiles = {}
+
+        _fetched_director_iin, director_profile = _director_iin_and_profile  # type: ignore[misc]
+        director_event_iin = _fetched_director_iin
+
+        # If enrichment-only path didn't find director_iin, retry using the stored
+        # relationExtended / affiliateTree (already in enriched_data).
+        if not _fetched_director_iin:
+            director_iin = _extract_director_iin(enrichment, enriched)
+            if director_iin:
+                try:
+                    director_profile = await _fetch_enrichment_profile(
+                        director_iin,
+                        name_hint=str(enrichment.get("companyInfo", {}).get("director") or ""),
+                    )
+                except Exception as exc:
+                    logger.warning("Director profile fallback fetch failed: %s", exc)
+                    director_profile = {}
+                director_event_iin = director_iin
+
+        # ── Deep wave B: lseg_extended + individual_courts in parallel ──
+        partial_enriched = {
+            "enrichment": enrichment,
+            "beneficiary": beneficiary,
+            "nonResidents": non_residents,
+        }
+        unique_targets = _build_lseg_extended_targets(partial_enriched)
+
+        lseg_extended_result, individual_courts_result = await asyncio.gather(
+            _run_lseg_extended_screening(case_id, unique_targets),
+            _fetch_individual_courts_for_case(enrichment, affiliate_profiles, main_bin, case_id=case_id),
+            return_exceptions=True,
+        )
+
+        if isinstance(lseg_extended_result, BaseException):
+            logger.warning("lseg_extended failed: %s", lseg_extended_result)
+            lseg_extended = {}
+        else:
+            lseg_extended = lseg_extended_result
+
+        if isinstance(individual_courts_result, BaseException):
+            logger.warning("individual_courts failed: %s", individual_courts_result)
+            individual_courts, individual_courts_meta = {}, {}
+        else:
+            individual_courts, individual_courts_meta = individual_courts_result
+
+        if unique_targets and not lseg_extended and not lseg_service.is_available():
+            logger.warning(
+                "lsegExtended empty for %s: %d foreign-affiliate targets but LSEG is not configured",
+                case_id,
+                len(unique_targets),
+            )
+        if unique_targets and not lseg_extended and lseg_service.is_available():
+            logger.warning(
+                "lsegExtended empty for %s despite %d targets (batch returned no mappable results)",
+                case_id,
+                len(unique_targets),
+            )
+
+        total_individual_cases = sum(len(v) for v in individual_courts.values() if isinstance(v, list))
+
+        # Merge into the LATEST enriched_data so we preserve core keys + any
+        # verification events written by the fetches above, then mark complete.
+        latest_row = db.get_case(case_id) or {}
+        merged = latest_row.get("enriched_data") if isinstance(latest_row, dict) else {}
+        merged = merged if isinstance(merged, dict) else {}
+        if director_event_iin:
+            merged = add_event_to_enriched(
+                merged,
+                provider="Adata",
+                action="director_profile",
+                subject={"type": "IIN", "value": director_event_iin},
+                request={"endpoint": "/company/info (+ fallbacks)", "params": {"iinBin": director_event_iin}},
+                outcome={"status": "ok"},
+            )
+        merged = add_event_to_enriched(
+            merged,
+            provider="Adata",
+            action="individual_courts:summary",
+            outcome={"status": "ok", "counts": {"iinChecked": len(individual_courts), "cases": total_individual_cases}},
+        )
+        merged.update(
+            {
+                "lsegExtended": lseg_extended,
+                "directorProfile": director_profile,
+                "affiliateProfiles": affiliate_profiles,
+                "individualCourts": individual_courts,
+                "individualCourtsMeta": individual_courts_meta,
+                "individualProfiles": individual_profiles,
+                "deepDiveStatus": "ready",
+            }
+        )
+        db.update_case(case_id, enriched_data=merged)
+    except Exception:
+        logger.exception("Case deep-dive failed for %s", case_id)
+        latest_row = db.get_case(case_id) or {}
+        merged = latest_row.get("enriched_data") if isinstance(latest_row, dict) else {}
+        merged = merged if isinstance(merged, dict) else {}
+        db.update_case(case_id, enriched_data={**merged, "deepDiveStatus": "ready"})
 
 
 async def rescreen_case_lseg(case_id: str, *, force: bool = False) -> bool:

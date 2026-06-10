@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -17,6 +17,7 @@ import {
   ExternalLink,
   Gauge,
   UserRound,
+  ChevronDown,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -367,7 +368,15 @@ function SectionMarkdown({ content }: { content: string }) {
 
 // ─── Section card ─────────────────────────────────────────────────────────────
 
-function SectionCard({ section }: { section: Section }) {
+function SectionCard({
+  section,
+  collapsed,
+  onToggle,
+}: {
+  section: Section
+  collapsed: boolean
+  onToggle: () => void
+}) {
   if (!section.content.trim() && !section.heading) return null
   const config = getSectionConfig(section.heading)
 
@@ -379,19 +388,29 @@ function SectionCard({ section }: { section: Section }) {
       )}
     >
       {section.heading && (
-        <div
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
           className={cn(
-            'flex items-center gap-2.5 px-5 py-3 border-b border-neutral-100',
+            'w-full flex items-center gap-2.5 px-5 py-3 text-left transition-colors hover:brightness-[0.98]',
             config.headerBg,
+            !collapsed && 'border-b border-neutral-100',
           )}
         >
           <span className={cn('p-1.5 rounded-md', config.iconBg)}>
             {config.icon}
           </span>
-          <h2 className="text-[14.5px] font-semibold text-neutral-900">{section.heading}</h2>
-        </div>
+          <h2 className="text-[14.5px] font-semibold text-neutral-900 flex-1">{section.heading}</h2>
+          <ChevronDown
+            className={cn(
+              'w-4 h-4 text-neutral-400 transition-transform shrink-0',
+              collapsed && '-rotate-90',
+            )}
+          />
+        </button>
       )}
-      {section.content && (
+      {section.content && !collapsed && (
         <div className="px-5 py-4">
           <SectionMarkdown content={section.content} />
         </div>
@@ -402,8 +421,36 @@ function SectionCard({ section }: { section: Section }) {
 
 // ─── Public component ─────────────────────────────────────────────────────────
 
+/** Long list-heavy / reference sections start collapsed to tame the wall of text. */
+const DEFAULT_COLLAPSED_KEYWORDS = ['структур', 'покрыт', 'ссылк', 'расшифров', 'сокращ']
+
+function defaultCollapsedSet(sections: Section[]): Set<number> {
+  const collapsed = new Set<number>()
+  sections.forEach((section, i) => {
+    const h = section.heading.toLowerCase()
+    if (DEFAULT_COLLAPSED_KEYWORDS.some((kw) => h.includes(kw))) collapsed.add(i)
+  })
+  return collapsed
+}
+
 export function ReportViewer({ markdown }: { markdown: string }) {
   const parsed = useMemo(() => parseReport(markdown), [markdown])
+  const [collapsed, setCollapsed] = useState<Set<number>>(() =>
+    defaultCollapsedSet(parsed.sections),
+  )
+
+  const toggle = (i: number) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+
+  const allCollapsed =
+    parsed.sections.length > 0 && collapsed.size === parsed.sections.length
+  const setAll = (collapse: boolean) =>
+    setCollapsed(collapse ? new Set(parsed.sections.map((_, i) => i)) : new Set())
 
   return (
     <div className="space-y-4">
@@ -412,8 +459,27 @@ export function ReportViewer({ markdown }: { markdown: string }) {
           <SectionMarkdown content={parsed.intro} />
         </div>
       )}
+      {parsed.sections.length > 1 && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setAll(!allCollapsed)}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-neutral-500 hover:text-neutral-800 transition-colors px-2.5 py-1 rounded-md hover:bg-neutral-100"
+          >
+            <ChevronDown
+              className={cn('w-3.5 h-3.5 transition-transform', allCollapsed && '-rotate-90')}
+            />
+            {allCollapsed ? 'Развернуть всё' : 'Свернуть всё'}
+          </button>
+        </div>
+      )}
       {parsed.sections.map((section, i) => (
-        <SectionCard key={i} section={section} />
+        <SectionCard
+          key={i}
+          section={section}
+          collapsed={collapsed.has(i)}
+          onToggle={() => toggle(i)}
+        />
       ))}
     </div>
   )

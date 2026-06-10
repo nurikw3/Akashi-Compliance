@@ -222,6 +222,9 @@ function PersonalCourtsPanel({ caseData }: { caseData: Case }) {
   }
 
   if (!hasData) {
+    if (caseData.deepDiveStatus === 'pending') {
+      return <LoadingGif message="Загружаем судебные дела связанных лиц…" size={120} className="py-8" />
+    }
     return (
       <p className="text-sm text-neutral-500">
         {directorIin
@@ -1538,6 +1541,16 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {caseData.deepDiveStatus === 'pending' && allAffiliatesScreened.length === 0 && (
+        <div className="rounded-xl bg-white border border-neutral-200">
+          <LoadingGif
+            message="Скринингуем связанных лиц и аффилиатов через LSEG…"
+            size={120}
+            className="py-8"
+          />
         </div>
       )}
     </div>

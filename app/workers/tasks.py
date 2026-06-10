@@ -13,7 +13,7 @@ from app.services.ai.jobs import chat_reply_for_case, generate_conclusion_for_ca
 from app.services.enrichment.providers.adata import AdataProvider
 from app.services.enrichment.providers.kompra import KompraProvider
 from app.services.enrichment.registry import registry
-from app.services.pipeline import process_case
+from app.services.pipeline import process_case, process_case_deep_dive
 from app.workers.broker import broker
 from app.workers.heartbeat import refresh_worker_heartbeat
 
@@ -66,16 +66,27 @@ async def worker_shutdown(_state: object) -> None:
 
 @broker.task(task_name="case_pipeline")
 async def case_pipeline_task(case_id: str) -> dict[str, str]:
-    """Enrich case via Adata; tree and AI conclusion are separate tasks."""
+    """Core enrichment via Adata; deep-dive, tree and AI conclusion are chained."""
     _ensure_worker_context()
     logger.info("case_pipeline (enrichment) start: %s", case_id)
     await process_case(case_id)
     row = db.get_case(case_id)
     if row and row.get("status") == "ready":
-        await affiliate_tree_task.kiq(case_id)
-        await ai_conclusion_task.kiq(case_id)
-        logger.info("case_pipeline queued affiliate_tree + ai_conclusion for %s", case_id)
+        await case_deep_dive_task.kiq(case_id)
+        logger.info("case_pipeline queued case_deep_dive for %s", case_id)
     logger.info("case_pipeline (enrichment) done: %s", case_id)
+    return {"caseId": case_id, "status": "done"}
+
+
+@broker.task(task_name="case_deep_dive")
+async def case_deep_dive_task(case_id: str) -> dict[str, str]:
+    """Deferred affiliate/director/individual deep-dive; then queue tree + AI."""
+    _ensure_worker_context()
+    logger.info("case_deep_dive start: %s", case_id)
+    await process_case_deep_dive(case_id)
+    await affiliate_tree_task.kiq(case_id)
+    await ai_conclusion_task.kiq(case_id)
+    logger.info("case_deep_dive queued affiliate_tree + ai_conclusion for %s", case_id)
     return {"caseId": case_id, "status": "done"}
 
 
