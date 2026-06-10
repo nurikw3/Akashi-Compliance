@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
-  AlertTriangle,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
@@ -14,9 +13,9 @@ import {
   Network,
   Plus,
   ShieldCheck,
-  TrendingUp,
 } from 'lucide-react'
 import { useCases } from '@/lib/cases-context'
+import { Abbr } from '@/components/ui/abbr'
 import { buildCaseGroups } from '@/lib/case-groups'
 import { caseDisplayName } from '@/lib/case-display'
 import { rescreenAllWithLseg } from '@/lib/api'
@@ -27,7 +26,7 @@ const VIEW_STORAGE_KEY = 'akashi-cases-view'
 
 // ── Badges ────────────────────────────────────────────────────────────────────
 
-function RiskBadge({ level, status }: { level: Case['riskLevel']; status: Case['status'] }) {
+function StatusBadge({ status }: { status: Case['status'] }) {
   if (status === 'pending' || status === 'enriching') {
     return (
       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-neutral-100 text-neutral-600">
@@ -43,16 +42,10 @@ function RiskBadge({ level, status }: { level: Case['riskLevel']; status: Case['
       </span>
     )
   }
-  const config = {
-    low:    { bg: 'bg-emerald-100', text: 'text-emerald-700', dot: 'bg-emerald-500', label: 'Низкий риск' },
-    medium: { bg: 'bg-amber-100',   text: 'text-amber-700',   dot: 'bg-amber-500',   label: 'Средний риск' },
-    high:   { bg: 'bg-red-100',     text: 'text-red-700',     dot: 'bg-red-500',     label: 'Высокий риск' },
-  }
-  const c = level ? config[level] : config.low
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${c.bg} ${c.text}`}>
-      <span className={`w-2 h-2 rounded-full ${c.dot}`} />
-      {c.label}
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+      <CheckCircle2 className="w-3 h-3" />
+      Готово
     </span>
   )
 }
@@ -61,19 +54,10 @@ function CaseMeta({ caseItem }: { caseItem: Case }) {
   return (
     <p className="text-sm text-neutral-500">
       <span className="font-mono">{caseItem.iinBin}</span>
-      {caseItem.totalScore != null && (
-        <>
-          <span className="mx-2">·</span>
-          <span className="inline-flex items-center gap-0.5">
-            <TrendingUp className="w-3 h-3" />
-            {caseItem.totalScore.toFixed(0)}
-          </span>
-        </>
-      )}
       {caseItem.lseg && (
         <>
           <span className="mx-2">·</span>
-          <span className="text-purple-600 font-medium">WC1</span>
+          <span className="text-purple-600 font-medium"><Abbr code="WC1">WC1</Abbr></span>
         </>
       )}
       <span className="mx-2">·</span>
@@ -120,7 +104,7 @@ function CaseRowLink({ caseItem, nested = false }: { caseItem: Case; nested?: bo
           <h3 className={`truncate ${nested ? 'text-sm font-medium text-neutral-700' : 'font-medium text-neutral-900'}`}>
             {caseDisplayName(caseItem)}
           </h3>
-          <RiskBadge level={caseItem.riskLevel} status={caseItem.status} />
+          <StatusBadge status={caseItem.status} />
         </div>
         <CaseMeta caseItem={caseItem} />
       </div>
@@ -145,7 +129,7 @@ function CaseCardLink({ caseItem, compact = false }: { caseItem: Case; compact?:
         <ChevronRight className="w-4 h-4 text-neutral-400 shrink-0 mt-0.5" />
       </div>
       <div className="mb-2">
-        <RiskBadge level={caseItem.riskLevel} status={caseItem.status} />
+        <StatusBadge status={caseItem.status} />
       </div>
       <CaseMeta caseItem={caseItem} />
     </Link>
@@ -254,9 +238,7 @@ export function CasesList() {
     total:      cases.length,
     groups:     groups.length,
     linked:     cases.length - groups.length,
-    low:        cases.filter((c) => c.riskLevel === 'low').length,
-    medium:     cases.filter((c) => c.riskLevel === 'medium').length,
-    high:       cases.filter((c) => c.riskLevel === 'high').length,
+    ready:      cases.filter((c) => c.status === 'ready').length,
     processing: cases.filter((c) => c.status === 'pending' || c.status === 'enriching').length,
     lseg:       cases.filter((c) => c.lseg != null).length,
   }), [cases, groups])
@@ -310,79 +292,48 @@ export function CasesList() {
     )
   }
 
-  const ready = cases.filter((c) => c.status === 'ready')
-
   return (
     <div>
       {/* ── Stats row ─────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-          <p className="text-2xl font-semibold text-red-600">{stats.high}</p>
-          <p className="text-sm text-red-500">Высокий риск</p>
-        </div>
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-          <p className="text-2xl font-semibold text-amber-600">{stats.medium}</p>
-          <p className="text-sm text-amber-500">Средний риск</p>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+        <div className="bg-white border border-neutral-200 rounded-xl p-4">
+          <p className="text-2xl font-semibold text-neutral-900">{stats.total}</p>
+          <p className="text-sm text-neutral-500">Всего дел</p>
         </div>
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-          <p className="text-2xl font-semibold text-emerald-600">{stats.low}</p>
-          <p className="text-sm text-emerald-500">Низкий риск</p>
+          <p className="text-2xl font-semibold text-emerald-600">{stats.ready}</p>
+          <p className="text-sm text-emerald-500">Готово</p>
         </div>
         <div className="bg-purple-50 border border-purple-200 rounded-xl p-4">
           <p className="text-2xl font-semibold text-purple-600">{stats.lseg}</p>
-          <p className="text-sm text-purple-500">LSEG проверено</p>
+          <p className="text-sm text-purple-500"><Abbr code="LSEG">LSEG</Abbr> проверено</p>
         </div>
-        <div className="bg-white border border-neutral-200 rounded-xl p-4 col-span-2 sm:col-span-1">
+        <div className="bg-white border border-neutral-200 rounded-xl p-4">
           <p className="text-2xl font-semibold text-neutral-600">{stats.processing}</p>
           <p className="text-sm text-neutral-500">В обработке</p>
         </div>
       </div>
 
-      {/* ── Risk bar ──────────────────────────────────────────────────────── */}
-      {ready.length > 0 && (stats.high > 0 || stats.medium > 0) && (
-        <div className="bg-white border border-neutral-200 rounded-xl p-4 mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-500" />
-              <span className="text-sm font-medium text-neutral-700">Распределение рисков</span>
-            </div>
-            <button
-              onClick={handleRescreen}
-              disabled={rescreenLoading || !apiConnected}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors"
-            >
-              {rescreenLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
-              LSEG Re-screen
-            </button>
-          </div>
-          <div className="flex h-6 rounded-lg overflow-hidden gap-0.5">
-            {stats.high > 0 && (
-              <div title={`Высокий: ${stats.high}`} className="bg-red-500 flex items-center justify-center text-white text-xs font-medium"
-                style={{ width: `${(stats.high / ready.length) * 100}%` }}>
-                {stats.high > 1 ? stats.high : ''}
-              </div>
-            )}
-            {stats.medium > 0 && (
-              <div title={`Средний: ${stats.medium}`} className="bg-amber-400 flex items-center justify-center text-white text-xs font-medium"
-                style={{ width: `${(stats.medium / ready.length) * 100}%` }}>
-                {stats.medium > 1 ? stats.medium : ''}
-              </div>
-            )}
-            {stats.low > 0 && (
-              <div title={`Низкий: ${stats.low}`} className="bg-emerald-500 flex items-center justify-center text-white text-xs font-medium"
-                style={{ width: `${(stats.low / ready.length) * 100}%` }}>
-                {stats.low > 1 ? stats.low : ''}
-              </div>
-            )}
-          </div>
-          {rescreenMsg && (
-            <div className="mt-3 flex items-center gap-2 text-xs text-purple-700">
-              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-              {rescreenMsg}
-            </div>
-          )}
+      {/* ── LSEG re-screen ────────────────────────────────────────────────── */}
+      <div className="bg-white border border-neutral-200 rounded-xl p-4 mb-6">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm font-medium text-neutral-700"><Abbr code="LSEG">LSEG</Abbr> World-Check скрининг</span>
+          <button
+            onClick={handleRescreen}
+            disabled={rescreenLoading || !apiConnected}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors"
+          >
+            {rescreenLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+            <Abbr code="LSEG">LSEG</Abbr> Re-screen
+          </button>
         </div>
-      )}
+        {rescreenMsg && (
+          <div className="mt-3 flex items-center gap-2 text-xs text-purple-700">
+            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+            {rescreenMsg}
+          </div>
+        )}
+      </div>
 
       {/* ── List controls ─────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">

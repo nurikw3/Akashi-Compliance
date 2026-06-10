@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from taskiq import TaskiqEvents
+
 from app.models import db
 from app.services.affiliate_tree import build_affiliate_tree
 from app.services.ai.jobs import chat_reply_for_case, generate_conclusion_for_case
@@ -41,7 +43,7 @@ async def _heartbeat_loop() -> None:
         await asyncio.sleep(interval)
 
 
-@broker.on_event("startup")
+@broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def worker_startup(_state: object) -> None:
     global _heartbeat_task
     _ensure_worker_context()
@@ -50,7 +52,7 @@ async def worker_startup(_state: object) -> None:
     logger.info("TaskIQ worker started (providers + DB ready)")
 
 
-@broker.on_event("shutdown")
+@broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def worker_shutdown(_state: object) -> None:
     global _heartbeat_task
     if _heartbeat_task is not None:

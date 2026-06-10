@@ -28,7 +28,6 @@ from app.services.enrichment.mapper import (
 from app.services.enrichment.service import EnrichmentService
 import app.services.lseg.service as lseg_service
 from app.services.lseg.mapper import build_lseg_extended_entities
-from app.services.risk.scoring import RiskScorer
 from app.services.ai.court_analyzer import analyze_court_cases
 from app.services.verification_log import add_event_to_enriched
 
@@ -40,7 +39,6 @@ logger = logging.getLogger(__name__)
 def _resolved_company_name(company_name: str, iin: str, enrichment: dict[str, Any]) -> str:
     return resolve_company_display_name(company_name, iin, enrichment)
 
-_scorer = RiskScorer()
 _KZ_BIN_RE = re.compile(r"^\d{12}$")
 _DIRECTOR_IIN_KEYS = frozenset(
     {
@@ -175,6 +173,7 @@ async def _fetch_enrichment_profile(iin: str, name_hint: str = "") -> dict[str, 
 def _affiliate_profile_summary(enrichment: dict[str, Any]) -> dict[str, Any]:
     info = enrichment.get("companyInfo") or {}
     return {
+        "name": info.get("fullName") or info.get("name"),
         "director": info.get("director"),
         "director_iin": info.get("director_iin"),
         "courts": enrichment.get("courts"),
@@ -208,7 +207,9 @@ def _build_individual_courts_meta(
         if profile.get("director_iin") == iin_val:
             return {
                 "name": profile.get("director"),
-                "role": f"Директор аффилиата ({bin_val})",
+                "role": "Директор аффилиата",
+                "companyBin": bin_val,
+                "companyName": profile.get("name") or profile.get("company_name"),
             }
     return {"name": None, "role": "Директор"}
 
@@ -396,7 +397,7 @@ async def _run_lseg_extended_screening(
 
 
 async def process_case(case_id: str) -> None:
-    """Adata enrichment + LSEG screening + unified scoring. AI conclusion queued separately."""
+    """Adata enrichment + LSEG screening. AI conclusion queued separately."""
     row = db.get_case(case_id)
     if row is None:
         return
@@ -439,10 +440,7 @@ async def process_case(case_id: str) -> None:
             case_id=case_id,
         )
 
-        # Unified 7-metric scoring
         affiliate_tree = existing.get("affiliateTree")
-        scoring = _scorer.calculate(enrichment, lseg_data, affiliate_tree)
-        assessment["riskLevel"] = scoring.risk_level
 
         # Parallel extended data: trustworthy-plus, beneficiary, non-residents, relation
         trustworthy_plus, beneficiary, non_residents, relation_extended = await asyncio.gather(
@@ -579,13 +577,6 @@ async def process_case(case_id: str) -> None:
                 elif isinstance(result, dict) and result:
                     individual_profiles[p_iin] = result
 
-        # Re-score with individual profiles (terrorist, PEP, enforcement)
-        if individual_profiles:
-            scoring = _scorer.calculate(
-                enrichment, lseg_data, affiliate_tree, individual_profiles
-            )
-            assessment["riskLevel"] = scoring.risk_level
-
         total_individual_cases = sum(len(v) for v in individual_courts.values() if isinstance(v, list))
         existing = add_event_to_enriched(
             existing,
@@ -675,15 +666,12 @@ async def process_case(case_id: str) -> None:
             case_id,
             status="ready",
             company_name=resolved_name,
-            risk_level=scoring.risk_level,
             enriched_data={
                 **({"verificationLog": verification_log} if verification_log else {}),
                 **({"fullReport": full_report, "fullReportGeneratedAt": full_report_ts} if full_report else {}),
                 "enrichment": enrichment,
                 "assessment": assessment,
                 "lseg": lseg_data,
-                "scoreBreakdown": scoring.breakdown_as_dicts(),
-                "totalScore": scoring.total_score,
                 "dataSources": data_sources,
                 "affiliateTree": _empty_tree_meta(),
                 "trustworthyPlus": trustworthy_plus if isinstance(trustworthy_plus, dict) else {},
@@ -707,7 +695,7 @@ async def process_case(case_id: str) -> None:
 
 
 async def rescreen_case_lseg(case_id: str, *, force: bool = False) -> bool:
-    """Apply LSEG screening + re-score to an already-enriched case. Returns True on success."""
+    """Apply LSEG screening to an already-enriched case. Returns True on success."""
     row = db.get_case(case_id)
     if row is None or row.get("status") != "ready":
         return False
@@ -743,29 +731,13 @@ async def rescreen_case_lseg(case_id: str, *, force: bool = False) -> bool:
     if lseg_data is None:
         return False
 
-    affiliate_tree = enriched.get("affiliateTree")
-    scoring = _scorer.calculate(enrichment, lseg_data, affiliate_tree)
-
-    assessment = enriched.get("assessment") or {}
-    assessment["riskLevel"] = scoring.risk_level
-
     enriched["lseg"] = lseg_data
-    enriched["scoreBreakdown"] = scoring.breakdown_as_dicts()
-    enriched["totalScore"] = scoring.total_score
-    enriched["assessment"] = assessment
 
     db.update_case(
         case_id,
-        risk_level=scoring.risk_level,
         enriched_data=enriched,
     )
-    logger.info(
-        "LSEG re-screen done for %s: score=%.1f risk=%s (force=%s)",
-        case_id,
-        scoring.total_score,
-        scoring.risk_level,
-        force,
-    )
+    logger.info("LSEG re-screen done for %s (force=%s)", case_id, force)
     return True
 
 

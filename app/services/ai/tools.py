@@ -36,7 +36,7 @@ TOOLS = [
             "name": "search_affiliate",
             "description": (
                 "Поиск аффилированной компании или физлица по имени в базе данных. "
-                "Возвращает данные досье: суды, налоги, риски, директора."
+                "Возвращает факты досье: суды, налоги, факторы (riskFlags Adata), директора."
             ),
             "parameters": {
                 "type": "object",
@@ -92,10 +92,9 @@ TOOLS = [
         "function": {
             "name": "traverse_affiliate_graph",
             "description": (
-                "Обходит граф аффилиатов текущего кейса и возвращает досье каждого узла "
-                "(риск, санкции, суды, налоги). Используй для вопросов: "
-                "'какие риски у аффилиатов', 'есть ли проблемы в группе компаний', "
-                "'кто из связанных компаний под санкциями'."
+                "Обходит граф аффилиатов текущего кейса и возвращает факты по каждому узлу "
+                "(санкции, суды, налоги, факторы). Используй для вопросов: "
+                "'данные по аффилиатам', 'кто из связанных компаний под санкциями'."
             ),
             "parameters": {
                 "type": "object",
@@ -135,8 +134,8 @@ TOOLS = [
         "function": {
             "name": "compare_cases",
             "description": (
-                "Сравнить два кейса по БИН/ИИН side-by-side: риск, санкции, суды, налоги. "
-                "Используй для вопросов: 'сравни с аффилиатом', 'какая компания рискованнее'."
+                "Сравнить два кейса по БИН/ИИН side-by-side по фактам: санкции, суды, налоги, статус. "
+                "Используй для вопросов вида 'сравни с аффилиатом'. Возвращает факты по обоим, без оценок."
             ),
             "parameters": {
                 "type": "object",
@@ -189,46 +188,20 @@ def _summarize_enrichment(enriched: dict) -> dict:
     }
 
 
-_NOISE_CATS = ("дтп", "610", "транспорт", "водител", "пдд", "нарушение водит")
-_SERIOUS_CATS = ("семейно-бытов", "насили", "уголов", "ст.73", "статья 73", "хулиган")
-
-
 def _classify_court_case(case: dict, person_name: str = "") -> dict:
-    """Возвращает краткое представление дела для чата."""
+    """Объективное представление дела для чата — только факты, без оценки тяжести."""
     ai = case.get("aiAnalysis") or {}
     cat = str(case.get("category") or case.get("type") or "—")
-    cat_lower = cat.lower()
     resolved = resolve_person_case_role(case, person_name)
-    adata_role = resolved["adata_role"]
-    display_role = resolved["display_role"]
-
-    is_noise = any(n in cat_lower for n in _NOISE_CATS)
-    is_serious = any(s in cat_lower for s in _SERIOUS_CATS)
-
-    if is_noise:
-        relevance = "не влияет на сделку (ДТП/ПДД)"
-    elif resolved["has_discrepancy"]:
-        relevance = (
-            "⚠️ расхождение: role Adata vs список сторон — сверить документы дела"
-        )
-    elif is_serious and adata_role == "Ответчик":
-        relevance = "🔴 RED FLAG для сделки"
-    elif is_serious and adata_role == "Третья сторона":
-        relevance = "⚠️ ст.73/серьёзное, третья сторона — уточнить связь"
-    elif adata_role == "Ответчик":
-        relevance = "⚠️ ответчик (Adata), уточнить"
-    else:
-        relevance = "нейтрально"
 
     return {
         "category": cat,
-        "role": display_role,
-        "adata_role": adata_role,
+        "role": resolved["display_role"],
+        "adata_role": resolved["adata_role"],
         "party_list_role": resolved["party_list_role"],
         "role_discrepancy": resolved["has_discrepancy"],
         "date": case.get("date") or "—",
         "result": case.get("result") or case.get("status") or "—",
-        "relevance": relevance,
         "ai_summary": ai.get("summary_ru") or "",
     }
 
@@ -282,10 +255,7 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
         person_role = str(person_meta.get("role") or "")
 
         classified = [_classify_court_case(c, person_name) for c in cases_raw if isinstance(c, dict)]
-        red = [c for c in classified if "RED FLAG" in c["relevance"]]
-        yellow = [c for c in classified if "⚠️" in c["relevance"]]
-        noise = [c for c in classified if "не влияет" in c["relevance"]]
-        neutral = [c for c in classified if c not in red and c not in yellow and c not in noise]
+        discrepancies = [c for c in classified if c.get("role_discrepancy")]
 
         return json.dumps(
             {
@@ -293,14 +263,8 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
                 "person": person_name,
                 "role_in_company": person_role,
                 "total_cases": len(classified),
-                "summary": {
-                    "red_flag": len(red),
-                    "needs_check": len(yellow),
-                    "noise_dtp_pdd": len(noise),
-                    "neutral": len(neutral),
-                },
-                "red_flag_cases": red[:5],
-                "needs_check_cases": yellow[:3],
+                "role_discrepancies": len(discrepancies),
+                "cases": classified[:10],
             },
             ensure_ascii=False,
         )
@@ -328,7 +292,6 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
                 {
                     "name": row.get("company_name"),
                     "bin": row.get("iin"),
-                    "riskLevel": row.get("risk_level"),
                     "data": _summarize_enrichment(enriched),
                 }
             )
@@ -349,7 +312,6 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
                 "found": True,
                 "name": row.get("company_name"),
                 "bin": row.get("iin"),
-                "riskLevel": row.get("risk_level"),
                 "data": _summarize_enrichment(enriched),
                 "lsegExtended": {
                     k: {
@@ -417,34 +379,29 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
                 "has_report": has_report,
             }
 
+            entry["node_type"] = str(node.get("type") or "")
+            entry["enriched"] = False
+
             if has_report and bin_val and bin_val not in seen_bins:
                 seen_bins.add(bin_val)
                 row = db.find_case_by_iin(bin_val)
                 if row:
                     aff_enriched = row.get("enriched_data") or {}
-                    entry["risk_level"] = row.get("risk_level") or "—"
                     entry["data"] = _summarize_enrichment(aff_enriched)
-                    # Суды физлиц (директора аффилиата)
+                    entry["enriched"] = True
+                    # Суды физлиц (директора аффилиата) — факт: количество дел
                     ind_courts = aff_enriched.get("individualCourts") or {}
                     ind_meta = aff_enriched.get("individualCourtsMeta") or {}
                     ind_summary: list[dict] = []
                     for iin_k, cases in ind_courts.items():
-                        if not isinstance(cases, list):
+                        if not isinstance(cases, list) or not cases:
                             continue
                         pmeta = ind_meta.get(iin_k) if isinstance(ind_meta.get(iin_k), dict) else {}
                         pname = str(pmeta.get("name") or iin_k)
                         prole = str(pmeta.get("role") or "")
-                        red = sum(
-                            1 for c in cases
-                            if isinstance(c, dict)
-                            and _classify_court_case(c, pname).get("relevance", "").startswith("🔴")
-                        )
-                        if red > 0:
-                            ind_summary.append({"person": pname, "role": prole, "red_flag_courts": red})
+                        ind_summary.append({"person": pname, "role": prole, "court_cases": len(cases)})
                     if ind_summary:
-                        entry["individual_court_flags"] = ind_summary
-                else:
-                    entry["risk_level"] = "не в базе"
+                        entry["individual_courts"] = ind_summary
 
             nodes.append(entry)
             for child in node.get("children") or []:
@@ -455,42 +412,103 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
             if isinstance(child, dict):
                 _walk(child, 1)
 
-        high_risk = [n for n in nodes if n.get("risk_level") == "high"]
+        # Честный обход: показываем ТОЛЬКО реально загруженные данные. По узлам
+        # без собственного отчёта суды/санкции/налоги НЕ проверены — пишем
+        # «нет данных», а не 0, и подсказываем конкретное действие.
+        NO_DATA = "нет данных (узел не обогащён)"
+
+        enriched_nodes = [n for n in nodes if n["enriched"]]
+        unenriched = [n for n in nodes if not n["enriched"]]
+        unenriched_company_bins = [
+            {"name": n["name"], "bin": n["bin"], "role": n["role"]}
+            for n in unenriched
+            if n.get("node_type") == "company" and len(n["bin"]) == 12
+        ]
+
         sanctioned = [
-            n for n in nodes
+            n for n in enriched_nodes
             if (n.get("data") or {}).get("lseg", {}).get("sanctionsHit")
         ]
-        flagged_courts = [n for n in nodes if n.get("individual_court_flags")]
+        with_courts = [
+            n for n in enriched_nodes
+            if (n.get("data") or {}).get("courts", {}).get("activeCases", 0)
+        ]
+
+        full_traversal = len(unenriched) == 0 and len(enriched_nodes) > 0
+        if full_traversal:
+            message = (
+                f"Граф обойдён полностью: данные есть по всем {len(nodes)} узлам."
+            )
+        elif enriched_nodes:
+            message = (
+                f"Полный обход графа невозможен: данные (суды/санкции/налоги) загружены "
+                f"только по {len(enriched_nodes)} из {len(nodes)} узлов. По остальным "
+                f"{len(unenriched)} узлам данных НЕТ — они не обогащены."
+            )
+        else:
+            message = (
+                f"Данных для обхода графа нет: ни по одному из {len(nodes)} узлов "
+                f"суды/санкции/налоги не загружены (узлы не обогащены)."
+            )
+
+        how_to_complete = (
+            "Чтобы проверить аффилиата, откройте его как отдельную проверку — кликните "
+            "узел в графе аффилиатов (это запускает lookup по БИН: POST /lookup с iinBin "
+            "и parentCaseId). После завершения проверки суды/санкции/налоги по узлу "
+            "появятся в графе. Без этого данных по узлу нет."
+        )
 
         return json.dumps(
             {
                 "total_nodes": len(nodes),
-                "high_risk_count": len(high_risk),
-                "sanctioned_count": len(sanctioned),
-                "court_flags_count": len(flagged_courts),
-                "summary": {
-                    "high_risk": [{"name": n["name"], "bin": n["bin"], "role": n["role"]} for n in high_risk],
+                "enriched_nodes": len(enriched_nodes),
+                "unenriched_nodes": len(unenriched),
+                "full_traversal_possible": full_traversal,
+                "message": message,
+                "how_to_complete": None if full_traversal else how_to_complete,
+                "unenriched_company_bins": unenriched_company_bins,
+                "checked_facts": {
                     "sanctioned": [{"name": n["name"], "bin": n["bin"]} for n in sanctioned],
-                    "court_flags": [
+                    "with_active_courts": [
                         {
-                            "company": n["name"],
-                            "flags": n["individual_court_flags"],
+                            "name": n["name"],
+                            "bin": n["bin"],
+                            "active_courts": (n.get("data") or {}).get("courts", {}).get("activeCases", 0),
                         }
-                        for n in flagged_courts
+                        for n in with_courts
                     ],
                 },
+                "data_note": (
+                    "ВАЖНО: значение «нет данных» означает, что узел НЕ проверялся, а НЕ "
+                    "что проблем нет. В ответе пользователю явно раздели: (1) по каким узлам "
+                    "данные ЕСТЬ и что именно в них найдено; (2) по каким узлам данных НЕТ "
+                    "(перечисли их) — и подскажи открыть их через lookup (см. how_to_complete). "
+                    "Запрещено писать «0 судов/санкций/налогов» по необогащённым узлам."
+                ),
                 "all_nodes": [
                     {
                         "name": n["name"],
                         "bin": n["bin"],
                         "role": n["role"],
                         "depth": n["depth"],
-                        "risk_level": n.get("risk_level", "—"),
-                        "active_courts": (n.get("data") or {}).get("courts", {}).get("activeCases", 0),
-                        "tax_debt": (n.get("data") or {}).get("taxes", {}).get("debt", 0),
-                        "sanctions": (n.get("data") or {}).get("lseg", {}).get("sanctionsHit", False),
-                        "pep": (n.get("data") or {}).get("lseg", {}).get("pepHit", False),
-                        "risk_flags": len((n.get("data") or {}).get("riskFlags") or []),
+                        "node_type": n.get("node_type"),
+                        "data_available": n["enriched"],
+                        "active_courts": (
+                            (n.get("data") or {}).get("courts", {}).get("activeCases", 0)
+                            if n["enriched"] else NO_DATA
+                        ),
+                        "tax_debt": (
+                            (n.get("data") or {}).get("taxes", {}).get("debt", 0)
+                            if n["enriched"] else NO_DATA
+                        ),
+                        "sanctions": (
+                            (n.get("data") or {}).get("lseg", {}).get("sanctionsHit", False)
+                            if n["enriched"] else NO_DATA
+                        ),
+                        "pep": (
+                            (n.get("data") or {}).get("lseg", {}).get("pepHit", False)
+                            if n["enriched"] else NO_DATA
+                        ),
                     }
                     for n in nodes
                 ],
@@ -521,7 +539,6 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
                 {
                     "name": row.get("company_name"),
                     "bin": row.get("iin"),
-                    "risk_level": row.get("risk_level") or "—",
                     "director": info.get("director") or "—",
                     "status": info.get("operatingStatus") or "—",
                     "active_courts": courts.get("activeCases", 0),
@@ -576,8 +593,6 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
                 "label": label,
                 "name": row.get("company_name"),
                 "bin": row.get("iin"),
-                "risk_level": row.get("risk_level") or "—",
-                "score": aff_enriched.get("totalScore"),
                 "director": info.get("director") or "—",
                 "status": info.get("operatingStatus") or "—",
                 "sanctions_wc1": (lseg.get("sanctions") or {}).get("isOnList", False),
@@ -592,38 +607,20 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], current_case_id: str
         card_a = _case_card(row_a, bin_a)
         card_b = _case_card(row_b, bin_b)
 
-        def _winner(key: str, higher_is_worse: bool = True) -> str:
-            va = card_a.get(key) or 0
-            vb = card_b.get(key) or 0
-            if va == vb:
-                return "равно"
-            worse = va > vb if higher_is_worse else va < vb
-            return f"{card_a['name']} рискованнее" if worse else f"{card_b['name']} рискованнее"
-
-        verdict_points = {
-            "sanctions": (card_a.get("sanctions_wc1"), card_b.get("sanctions_wc1")),
-            "pep": (card_a.get("pep"), card_b.get("pep")),
-            "courts": (card_a.get("active_courts_company", 0), card_b.get("active_courts_company", 0)),
-            "tax_debt": (card_a.get("tax_debt", 0), card_b.get("tax_debt", 0)),
-        }
-        score_a = sum(1 for k, (va, vb) in verdict_points.items() if va and not vb or (isinstance(va, (int, float)) and isinstance(vb, (int, float)) and va > vb))
-        score_b = sum(1 for k, (va, vb) in verdict_points.items() if vb and not va or (isinstance(va, (int, float)) and isinstance(vb, (int, float)) and vb > va))
-        overall = (
-            f"{card_a['name']} рискованнее ({score_a} vs {score_b})"
-            if score_a > score_b
-            else f"{card_b['name']} рискованнее ({score_b} vs {score_a})"
-            if score_b > score_a
-            else "сопоставимый риск"
-        )
+        # Factual side-by-side: report each metric for both, no "who is riskier" verdict.
+        def _facts(key: str) -> dict:
+            return {"a": card_a.get(key), "b": card_b.get(key)}
 
         return json.dumps(
             {
                 "comparison": [card_a, card_b],
-                "verdict": {
-                    "overall": overall,
-                    "sanctions": _winner("sanctions_wc1"),
-                    "courts": _winner("active_courts_company"),
-                    "tax_debt": _winner("tax_debt"),
+                "facts": {
+                    "sanctions_wc1": _facts("sanctions_wc1"),
+                    "pep": _facts("pep"),
+                    "active_courts_company": _facts("active_courts_company"),
+                    "individual_courts_total": _facts("individual_courts_total"),
+                    "tax_debt": _facts("tax_debt"),
+                    "status": _facts("status"),
                 },
             },
             ensure_ascii=False,

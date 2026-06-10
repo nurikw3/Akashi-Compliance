@@ -70,8 +70,10 @@ class Settings:
         os.getenv("ADATA_BASE_URL", _DEFAULT_ADATA_BASE_URL)
     )
     adata_timeout_seconds: float = float(os.getenv("ADATA_TIMEOUT_SECONDS", "30"))
-    adata_poll_attempts: int = int(os.getenv("ADATA_POLL_ATTEMPTS", "10"))
-    adata_poll_delay_seconds: float = float(os.getenv("ADATA_POLL_DELAY_SECONDS", "2"))
+    # Adata /info runs as an async job that can take ~90–120s; the poll window
+    # (attempts × delay) must comfortably exceed that or companyInfo comes back empty.
+    adata_poll_attempts: int = int(os.getenv("ADATA_POLL_ATTEMPTS", "45"))
+    adata_poll_delay_seconds: float = float(os.getenv("ADATA_POLL_DELAY_SECONDS", "3"))
     graph_probe_concurrency: int = int(os.getenv("GRAPH_PROBE_CONCURRENCY", "3"))
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     task_queue_enabled: bool = os.getenv("TASK_QUEUE_ENABLED", "true").lower() in (

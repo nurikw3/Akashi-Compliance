@@ -11,7 +11,6 @@ from app.core.config import settings
 from app.models import db
 from app.services.enrichment.mapper import build_assessment, company_data_to_enrichment
 from app.services.enrichment.service import EnrichmentService
-from app.services.risk.service import RiskService
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +64,12 @@ def _snapshot_from_company_data(
     display_name = company_data.name or name_hint
     enrichment = company_data_to_enrichment(display_name or "", company_data)
     assessment = build_assessment(enrichment)
-    risk = RiskService().calculate(company_data)
-    assessment["riskLevel"] = risk.value
     return {
         "bin": bin_val,
         "name": display_name or name_hint,
         "enrichment": enrichment,
         "assessment": assessment,
         "dataSources": data_sources,
-        "riskLevel": risk.value,
         "cachedAt": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -120,7 +116,6 @@ def get_cached_node_report(
             "enrichment": enriched.get("enrichment"),
             "assessment": enriched.get("assessment"),
             "dataSources": enriched.get("dataSources"),
-            "riskLevel": case_row.get("risk_level"),
             "conclusion": case_row.get("conclusion"),
         }
 
@@ -146,7 +141,6 @@ def get_cached_node_report(
             "enrichment": existing_enriched.get("enrichment"),
             "assessment": existing_enriched.get("assessment"),
             "dataSources": existing_enriched.get("dataSources"),
-            "riskLevel": existing.get("risk_level"),
             "conclusion": existing.get("conclusion"),
         }
     return None
@@ -383,7 +377,6 @@ async def build_affiliate_tree(case_id: str) -> None:
                 "enrichment": enrichment,
                 "assessment": assessment,
                 "dataSources": enriched.get("dataSources") or {},
-                "riskLevel": row.get("risk_level"),
                 "cachedAt": datetime.now(timezone.utc).isoformat(),
             },
         )

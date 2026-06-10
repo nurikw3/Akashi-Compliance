@@ -53,7 +53,6 @@ def init_db() -> None:
                 company_name TEXT NOT NULL,
                 iin TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
-                risk_level TEXT,
                 enriched_data TEXT,
                 sources TEXT DEFAULT '[]',
                 conclusion TEXT,
@@ -170,7 +169,7 @@ def list_cases() -> list[dict[str, Any]]:
     with get_connection() as connection:
         rows = connection.execute(
             """
-            SELECT id, company_name, iin, status, risk_level, enriched_data,
+            SELECT id, company_name, iin, status, enriched_data,
                    sources, conclusion, created_at, parent_case_id
             FROM cases
             ORDER BY created_at DESC
@@ -185,7 +184,7 @@ def search_cases_by_name(name: str, limit: int = 5) -> list[dict[str, Any]]:
     with get_connection() as connection:
         rows = connection.execute(
             """
-            SELECT id, company_name, iin, status, risk_level, enriched_data,
+            SELECT id, company_name, iin, status, enriched_data,
                    sources, conclusion, created_at, parent_case_id
             FROM cases
             WHERE company_name ILIKE %s
@@ -208,7 +207,7 @@ def search_cases_by_director(name: str, limit: int = 10) -> list[dict[str, Any]]
     with get_connection() as connection:
         rows = connection.execute(
             """
-            SELECT id, company_name, iin, status, risk_level, enriched_data,
+            SELECT id, company_name, iin, status, enriched_data,
                    sources, conclusion, created_at, parent_case_id
             FROM cases
             WHERE enriched_data IS NOT NULL
@@ -224,28 +223,11 @@ def search_cases_by_director(name: str, limit: int = 10) -> list[dict[str, Any]]
     return [_deserialize_case(row) for row in rows]
 
 
-def find_cases_by_risk_level(risk_level: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Find cases by risk level."""
-    with get_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT id, company_name, iin, status, risk_level, enriched_data,
-                   sources, conclusion, created_at, parent_case_id
-            FROM cases
-            WHERE risk_level = %s AND status = 'ready'
-            ORDER BY created_at DESC
-            LIMIT %s
-            """,
-            (risk_level, limit),
-        ).fetchall()
-    return [_deserialize_case(row) for row in rows]
-
-
 def find_case_by_iin(iin: str) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute(
             """
-            SELECT id, company_name, iin, status, risk_level, enriched_data,
+            SELECT id, company_name, iin, status, enriched_data,
                    sources, conclusion, created_at, parent_case_id
             FROM cases
             WHERE iin = %s
@@ -265,7 +247,7 @@ def get_case(case_id: str) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute(
             """
-            SELECT id, company_name, iin, status, risk_level, enriched_data,
+            SELECT id, company_name, iin, status, enriched_data,
                    sources, conclusion, created_at, parent_case_id
             FROM cases
             WHERE id = %s
@@ -280,7 +262,6 @@ def get_case(case_id: str) -> dict[str, Any] | None:
 def update_case(case_id: str, **fields: Any) -> None:
     allowed = {
         "status",
-        "risk_level",
         "enriched_data",
         "sources",
         "conclusion",

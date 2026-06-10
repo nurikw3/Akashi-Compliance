@@ -15,6 +15,8 @@ import {
   TriangleAlert,
   Info,
   ExternalLink,
+  Gauge,
+  UserRound,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -89,6 +91,38 @@ type SectionConfig = {
 function getSectionConfig(heading: string): SectionConfig {
   const h = heading.toLowerCase()
 
+  if (h.includes('снимок')) {
+    return {
+      icon: <Gauge className="w-4 h-4" />,
+      borderColor: 'border-l-sky-500',
+      iconBg: 'bg-sky-50 text-sky-600',
+      headerBg: 'bg-sky-50/40',
+    }
+  }
+  if (h.includes('существенн')) {
+    return {
+      icon: <TriangleAlert className="w-4 h-4" />,
+      borderColor: 'border-l-orange-500',
+      iconBg: 'bg-orange-50 text-orange-600',
+      headerBg: 'bg-orange-50/40',
+    }
+  }
+  if (h.includes('физическ') || h.includes('директор') || h.includes('учредител')) {
+    return {
+      icon: <UserRound className="w-4 h-4" />,
+      borderColor: 'border-l-teal-500',
+      iconBg: 'bg-teal-50 text-teal-600',
+      headerBg: 'bg-teal-50/40',
+    }
+  }
+  if (h.includes('покрыт')) {
+    return {
+      icon: <Database className="w-4 h-4" />,
+      borderColor: 'border-l-neutral-400',
+      iconBg: 'bg-neutral-100 text-neutral-500',
+      headerBg: 'bg-neutral-50',
+    }
+  }
   if (h.includes('резюме') || h.includes('executive') || h.includes('итоговый риск')) {
     return {
       icon: <FileText className="w-4 h-4" />,
@@ -156,14 +190,6 @@ function getSectionConfig(heading: string): SectionConfig {
 
 // ─── Pre-processors ───────────────────────────────────────────────────────────
 
-/** Convert "green/yellow/red flag" text to pseudo-link badge markers. */
-function injectRiskBadges(text: string): string {
-  return text
-    .replace(/\bgreen\s+flag\b/gi, '[🟢 Низкий риск](risk:green)')
-    .replace(/\byellow\s+flag\b/gi, '[🟡 Средний риск](risk:yellow)')
-    .replace(/\bred\s+flag\b/gi, '[🔴 Высокий риск](risk:red)')
-}
-
 /**
  * Wrap "### Краткое сведение" / "### Вердикт ИИ" blocks in a blockquote so
  * the blockquote component can render them as a highlighted summary card.
@@ -207,7 +233,7 @@ function wrapTakeawayBlocks(text: string): string {
 }
 
 function processContent(content: string): string {
-  return injectRiskBadges(wrapTakeawayBlocks(content))
+  return wrapTakeawayBlocks(content)
 }
 
 // ─── Markdown renderer ────────────────────────────────────────────────────────
@@ -273,24 +299,6 @@ function SectionMarkdown({ content }: { content: string }) {
             </div>
           ),
           a: ({ href, children }) => {
-            if (href?.startsWith('risk:')) {
-              const level = href.slice(5) as 'green' | 'yellow' | 'red'
-              const styles: Record<string, string> = {
-                green: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-                yellow: 'bg-amber-100 text-amber-800 border-amber-200',
-                red: 'bg-red-100 text-red-800 border-red-200',
-              }
-              return (
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold border whitespace-nowrap align-middle',
-                    styles[level] ?? styles.green,
-                  )}
-                >
-                  {children}
-                </span>
-              )
-            }
             if (href?.startsWith('/cases/')) {
               return (
                 <button

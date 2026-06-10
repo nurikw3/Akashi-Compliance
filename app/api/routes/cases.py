@@ -111,7 +111,6 @@ def check_upload_duplicates(payload: CheckDuplicatesRequest) -> dict[str, Any]:
                 "existingCaseId": existing["id"],
                 "name": existing.get("company_name"),
                 "status": existing.get("status"),
-                "riskLevel": existing.get("risk_level"),
             }
         )
     return {"matches": matches, "count": len(matches)}
@@ -439,7 +438,7 @@ def post_document(case_id: str, payload: DocumentRequest) -> dict[str, Any]:
 
 @router.post("/admin/rescreen")
 async def rescreen_all_with_lseg(force: bool = False) -> dict[str, Any]:
-    """Backfill or refresh LSEG screening + re-score for ready cases.
+    """Backfill or refresh LSEG screening for ready cases.
 
     With ``force=false`` (default), skips cases that already have ``lseg.screenedAt``.
     With ``force=true``, re-runs WC1 and invalidates Redis cache per case.
@@ -499,7 +498,7 @@ async def rescreen_extended(case_id: str) -> dict[str, Any]:
 
 @router.post("/cases/{case_id}/lseg/rescreen")
 async def rescreen_case_lseg_endpoint(case_id: str, force: bool = True) -> dict[str, Any]:
-    """Re-run LSEG WC1 for one case and update risk score."""
+    """Re-run LSEG WC1 screening for one case."""
     row = db.get_case(case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -514,8 +513,6 @@ async def rescreen_case_lseg_endpoint(case_id: str, force: bool = True) -> dict[
     enriched = (updated or {}).get("enriched_data") or {}
     return {
         "caseId": case_id,
-        "riskLevel": updated.get("risk_level") if updated else None,
-        "totalScore": enriched.get("totalScore"),
         "lseg": enriched.get("lseg"),
     }
 
@@ -596,18 +593,4 @@ def get_case_full_report_meta(case_id: str) -> dict[str, Any]:
     }
 
 
-@router.get("/cases/{case_id}/score")
-def get_case_score(case_id: str) -> dict[str, Any]:
-    """Return score breakdown and totalScore for a case."""
-    row = db.get_case(case_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Case not found")
-
-    enriched = row.get("enriched_data") or {}
-    return {
-        "totalScore": enriched.get("totalScore"),
-        "riskLevel": row.get("risk_level"),
-        "breakdown": enriched.get("scoreBreakdown") or [],
-        "lsegScreenedAt": (enriched.get("lseg") or {}).get("screenedAt"),
-    }
 

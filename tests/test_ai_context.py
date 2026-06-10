@@ -26,7 +26,7 @@ def test_build_case_context_includes_sections():
         company_name='ТОО "TEST"',
         iin="123456789012",
         enrichment=SAMPLE,
-        assessment={"riskLevel": "medium", "summary": "Есть риски", "recommendations": []},
+        assessment={"flags": [{"type": "fact", "message": "Налоговая задолженность: 1 000 тг"}]},
         conclusion="Тестовое заключение",
     )
     assert "ТОО" in text

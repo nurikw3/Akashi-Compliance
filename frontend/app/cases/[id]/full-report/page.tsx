@@ -6,8 +6,6 @@ import { useParams } from 'next/navigation'
 import {
   AlertTriangle,
   ArrowLeft,
-  ChevronDown,
-  ChevronRight,
   FileText,
   Loader2,
   Printer,
@@ -17,42 +15,7 @@ import { useCases } from '@/lib/cases-context'
 import { fetchFullReport, fetchFullReportMeta, generateFullReport } from '@/lib/api'
 import { LoadingGif } from '@/components/loading-gif'
 import { ReportViewer } from '@/components/report-viewer'
-import type { Case, FullReportContextEstimate } from '@/lib/types'
-
-function ContextEstimatePanel({ estimate }: { estimate: FullReportContextEstimate }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="mb-4 print:hidden">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 text-sm text-neutral-600 hover:text-neutral-900"
-      >
-        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-        Размер контекста для ИИ ({estimate.model}, окно {estimate.contextWindowTokens / 1000}k)
-      </button>
-      {open && (
-        <div className="mt-2 text-sm text-neutral-600 bg-neutral-50 border border-neutral-200 rounded-lg px-4 py-3 space-y-2">
-          <p>
-            ~{estimate.approxTotalInputTokens.toLocaleString('ru-RU')} токенов ввода суммарно по{' '}
-            {estimate.sectionCalls} запросам (секции: санкции, суды, структура, резюме). На один
-            запрос — не более окна модели; запас ~{estimate.headroomTokens.toLocaleString('ru-RU')}{' '}
-            токенов.
-          </p>
-          <ul className="text-xs font-mono space-y-1">
-            {Object.entries(estimate.sections).map(([key, s]) => (
-              <li key={key}>
-                {key}: {s.approxTokens.toLocaleString('ru-RU')} tok ({s.chars.toLocaleString('ru-RU')}{' '}
-                / cap {s.capChars.toLocaleString('ru-RU')} симв.)
-              </li>
-            ))}
-          </ul>
-          <p className="text-xs text-neutral-500">{estimate.note}</p>
-        </div>
-      )}
-    </div>
-  )
-}
+import type { Case } from '@/lib/types'
 
 export default function FullReportPage() {
   const params = useParams()
@@ -69,7 +32,6 @@ export default function FullReportPage() {
   const [generatedAt, setGeneratedAt] = useState<string | null>(null)
   const [stale, setStale] = useState(false)
   const [staleMessage, setStaleMessage] = useState<string | null>(null)
-  const [contextEstimate, setContextEstimate] = useState<FullReportContextEstimate | null>(null)
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -77,13 +39,9 @@ export default function FullReportPage() {
   const applyMeta = useCallback((meta: {
     fullReportStale?: boolean
     fullReportStaleMessage?: string | null
-    fullReportContextEstimate?: FullReportContextEstimate | null
   }) => {
     setStale(Boolean(meta.fullReportStale))
     setStaleMessage(meta.fullReportStaleMessage ?? null)
-    if (meta.fullReportContextEstimate) {
-      setContextEstimate(meta.fullReportContextEstimate)
-    }
   }, [])
 
   const loadMeta = useCallback(async () => {
@@ -105,7 +63,6 @@ export default function FullReportPage() {
       setGeneratedAt(data.generatedAt)
       setStale(Boolean(data.stale))
       setStaleMessage(data.staleMessage ?? null)
-      if (data.contextEstimate) setContextEstimate(data.contextEstimate)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Ошибка загрузки'
       if (msg.includes('404') || msg.includes('не сгенерирован')) {
@@ -129,9 +86,6 @@ export default function FullReportPage() {
   useEffect(() => {
     if (caseData) {
       applyMeta(caseData)
-      if (caseData.fullReportContextEstimate) {
-        setContextEstimate(caseData.fullReportContextEstimate)
-      }
     }
   }, [caseData, applyMeta])
 
@@ -168,7 +122,6 @@ export default function FullReportPage() {
           setGeneratedAt(data.generatedAt)
           setStale(Boolean(data.stale))
           setStaleMessage(data.staleMessage ?? null)
-          if (data.contextEstimate) setContextEstimate(data.contextEstimate)
           await refreshCase(caseId)
           setGenerating(false)
           return
@@ -190,7 +143,6 @@ export default function FullReportPage() {
   const displayStale = stale || caseData?.fullReportStale
   const displayStaleMessage =
     staleMessage || caseData?.fullReportStaleMessage || null
-  const estimate = contextEstimate ?? caseData?.fullReportContextEstimate ?? null
   const regenerateLabel = displayStale
     ? 'Пересоздать с учётом графа'
     : report
@@ -267,8 +219,6 @@ export default function FullReportPage() {
           </button>
         </div>
       </div>
-
-      {estimate && <ContextEstimatePanel estimate={estimate} />}
 
       {displayStale && displayStaleMessage && (
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-sm text-amber-950 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 print:hidden">

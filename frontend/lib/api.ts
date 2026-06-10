@@ -121,7 +121,6 @@ export type DuplicateMatch = {
   existingCaseId: string
   name: string
   status: string
-  riskLevel: string | null
 }
 
 export async function checkUploadDuplicates(
@@ -289,8 +288,6 @@ export async function rescreenCaseLseg(
   force = true
 ): Promise<{
   caseId: string
-  riskLevel: string | null
-  totalScore: number | null
   lseg: Case['lseg']
 }> {
   const q = force ? '?force=true' : ''
@@ -326,15 +323,6 @@ export async function generateFullReport(
 ): Promise<{ status: string; message: string; caseId: string; force?: boolean }> {
   const q = force ? '?force=true' : ''
   return request(`/api/cases/${caseId}/full-report${q}`, { method: 'POST' })
-}
-
-export async function fetchCaseScore(caseId: string): Promise<{
-  totalScore: number | null
-  riskLevel: string | null
-  breakdown: import('@/lib/types').ScoreMetric[]
-  lsegScreenedAt: string | null
-}> {
-  return request(`/api/cases/${caseId}/score`)
 }
 
 export { API_URL }

@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.enrichment.base import CompanyData
-from app.services.risk.service import RiskService
 
 
 def empty_enrichment(company_name: str, iin: str) -> dict[str, Any]:
@@ -54,17 +53,20 @@ def empty_enrichment(company_name: str, iin: str) -> dict[str, Any]:
 
 
 def build_assessment(enrichment: dict[str, Any]) -> dict[str, Any]:
+    """Collect objective findings (facts) without any criticality judgement.
+
+    Returns only a flat list of factual ``flags`` describing what was found
+    during the check. The system highlights findings — it does not assign a
+    risk level, summary or recommendation.
+    """
     flags: list[dict[str, str]] = []
-    risk_score = 0
 
     taxes = enrichment.get("taxes", {})
     debt = taxes.get("debt", 0)
-    tax_status = taxes.get("status", "clean")
     if debt > 0:
-        risk_score += 3 if tax_status == "critical" else 1
         flags.append(
             {
-                "type": "danger" if tax_status == "critical" else "warning",
+                "type": "fact",
                 "message": f"Налоговая задолженность: {debt:,} тг".replace(",", " "),
             }
         )
@@ -72,80 +74,32 @@ def build_assessment(enrichment: dict[str, Any]) -> dict[str, Any]:
     courts = enrichment.get("courts", {})
     active = courts.get("activeCases", 0)
     if active > 0:
-        risk_score += 2
         note = courts.get("note") or ""
         flags.append(
             {
-                "type": "warning",
+                "type": "fact",
                 "message": f"Судебные дела ({courts.get('scope', 'company')}): {active}. {note}".strip(),
             }
         )
 
     for msg in enrichment.get("statusFlags", [])[:5]:
-        risk_score += 2
-        flags.append({"type": "warning", "message": msg})
+        flags.append({"type": "fact", "message": msg})
 
     for msg in enrichment.get("riskFlags", [])[:8]:
-        risk_score += 3 if any(w in msg.lower() for w in ("террор", "банкрот", "чси", "арест")) else 1
-        flags.append(
-            {
-                "type": "danger"
-                if any(w in msg.lower() for w in ("террор", "банкрот", "педофил", "розыск"))
-                else "warning",
-                "message": msg,
-            }
-        )
+        flags.append({"type": "fact", "message": msg})
 
     sanctions = enrichment.get("sanctions", {})
     if sanctions.get("isOnList"):
-        risk_score += 5
         lists = sanctions.get("lists", [])
         if lists:
             flags.append(
                 {
-                    "type": "danger",
+                    "type": "fact",
                     "message": f"Факторы комплаенса: {', '.join(lists)}",
                 }
             )
 
-    if risk_score >= 4:
-        risk_level = "high"
-    elif risk_score >= 2:
-        risk_level = "medium"
-    else:
-        risk_level = "low"
-
-    summaries = {
-        "low": "Компания не имеет существенных рисков. Финансовое состояние стабильное, судебных споров нет, в санкционных списках не числится.",
-        "medium": "Выявлены факторы, требующие внимания. Рекомендуется дополнительная проверка перед заключением крупных сделок.",
-        "high": "Высокий уровень риска. Обнаружены критические факторы, требующие детального анализа и согласования с руководством.",
-        "critical": "Критический уровень риска. Формальные санкции, уголовные дела или множественные блокирующие факторы. Сотрудничество без одобрения комплаенс-комитета недопустимо.",
-    }
-    recommendations = {
-        "low": ["Стандартная процедура согласования", "Мониторинг раз в квартал"],
-        "medium": [
-            "Запросить дополнительные документы",
-            "Проверить аффилированных лиц",
-            "Установить лимит на сумму контракта",
-        ],
-        "high": [
-            "Согласование с комплаенс-комитетом обязательно",
-            "Провести расширенную due diligence",
-            "Рассмотреть отказ от сотрудничества",
-        ],
-        "critical": [
-            "Немедленная эскалация в комплаенс-комитет",
-            "Заморозить все текущие операции с контрагентом",
-            "Рассмотреть полный отказ от сотрудничества",
-        ],
-    }
-
-    return {
-        "riskLevel": risk_level,
-        "summary": summaries[risk_level],
-        "recommendations": recommendations[risk_level],
-        "flags": flags,
-    }
+    return {"flags": flags}
 
 
 def _apply_courts_from_data(enrichment: dict[str, Any], data: CompanyData) -> None:
@@ -320,10 +274,6 @@ def company_data_to_enrichment(
         ]
 
     return enrichment
-
-
-def risk_from_company_data(data: CompanyData):
-    return RiskService().calculate(data)
 
 
 def build_graph(enrichment: dict[str, Any], main_name: str, main_iin: str) -> dict[str, Any]:

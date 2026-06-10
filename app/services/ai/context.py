@@ -131,12 +131,10 @@ def build_case_context(
         )
 
     if assessment:
-        parts.append("\n## Оценка комплаенс-системы")
-        parts.append(f"Уровень риска: {assessment.get('riskLevel', '—')}")
-        parts.append(f"Резюме: {assessment.get('summary', '—')}")
-        parts.extend(_lines("Рекомендации", assessment.get("recommendations") or []))
         flag_msgs = [f.get("message", "") for f in (assessment.get("flags") or []) if f.get("message")]
-        parts.extend(_lines("Флаги оценки", flag_msgs))
+        if flag_msgs:
+            parts.append("\n## Найденные факты")
+            parts.extend(_lines("Факты", flag_msgs))
 
     if conclusion:
         parts.append(f"\n## Заключение ИИ\n{conclusion}")
@@ -248,17 +246,17 @@ def _format_individual_courts_short(enriched: dict[str, Any]) -> list[str]:
         for case in serious_defendant[:2]:
             cat = case.get("category") or case.get("type") or "—"
             date = case.get("date") or "—"
-            detail_parts.append(f"🔴 ответчик · {cat} · {date}")
+            detail_parts.append(f"ответчик · {cat} · {date}")
         for case in serious_third_party[:2]:
             cat = case.get("category") or case.get("type") or "—"
             date = case.get("date") or "—"
             r = resolve_person_case_role(case, person_name)
             tag = "расхождение role/стороны" if r["has_discrepancy"] else "третья сторона"
-            detail_parts.append(f"⚠️ {tag} · {cat} · {date}")
+            detail_parts.append(f"{tag} · {cat} · {date}")
         for case in other_defendant[:2]:
             cat = case.get("category") or case.get("type") or "—"
             date = case.get("date") or "—"
-            detail_parts.append(f"⚠️ ответчик · {cat} · {date}")
+            detail_parts.append(f"ответчик · {cat} · {date}")
         summary = f"всего {len(cases)} дел в Adata"
         if detail_parts:
             lines.append(f"{label}: {summary}; {'; '.join(detail_parts)}")
@@ -281,10 +279,9 @@ def build_short_context(
     parts = [f"Компания: {company_name} (БИН: {iin})"]
 
     if assessment:
-        risk = assessment.get("riskLevel", "—")
-        score = assessment.get("score") or assessment.get("totalScore")
-        score_part = f", балл: {score}" if score else ""
-        parts.append(f"Уровень риска: {risk}{score_part}")
+        flag_msgs = [f.get("message", "") for f in (assessment.get("flags") or []) if f.get("message")]
+        if flag_msgs:
+            parts.extend(_lines("Найденные факты", flag_msgs))
 
     if enrichment:
         info = enrichment.get("companyInfo") or {}

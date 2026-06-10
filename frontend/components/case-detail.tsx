@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, type RefObject } from 'react'
+import { useState, useRef, useEffect, type ReactNode, type RefObject } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import {
@@ -17,7 +17,7 @@ import {
   Network,
   Download,
   ShieldCheck,
-  TrendingUp,
+  Info,
   Globe,
   ListChecks,
   ChevronDown,
@@ -31,29 +31,40 @@ import { AffiliatesGraph } from '@/components/affiliates-graph'
 import { LoadingGif } from '@/components/loading-gif'
 import { MarkdownContent } from '@/components/markdown-content'
 import { dataSourceLabel, sectionSource } from '@/lib/data-source-label'
+import { resolveSectionSource } from '@/lib/source-ref'
+import { Abbr } from '@/components/ui/abbr'
+import { SourceRef } from '@/components/ui/source-ref'
 import { caseDisplayName, formatPersonField } from '@/lib/case-display'
-import type { Case, DataSourceKind, ScoreMetric, LsegData, LsegSanctionHit, LsegExtendedEntity, IndividualCourtCase, VerificationLogEvent } from '@/lib/types'
+import type { Case, DataSourceKind, DataSources, LsegData, LsegSanctionHit, LsegExtendedEntity, IndividualCourtCase, VerificationLogEvent } from '@/lib/types'
 
-type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'scoring' | 'lseg' | 'log'
+type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'lseg' | 'log'
 
-const VALID_TABS: Tab[] = ['data', 'documents', 'assessment', 'chat', 'scoring', 'lseg', 'log']
+const VALID_TABS: Tab[] = ['data', 'documents', 'assessment', 'chat', 'lseg', 'log']
 
 function SectionHeading({
   icon: Icon,
   iconClassName,
   title,
   source,
+  dataSources,
+  verificationLog,
+  sectionKey,
 }: {
   icon: typeof Building2
   iconClassName: string
-  title: string
+  title: ReactNode
   source: DataSourceKind
+  dataSources?: DataSources
+  verificationLog?: VerificationLogEvent[]
+  sectionKey?: keyof DataSources
 }) {
   return (
     <div className="flex items-center gap-2 mb-4 flex-wrap">
       <Icon className={`w-5 h-5 ${iconClassName}`} />
       <h3 className="font-semibold text-neutral-900">{title}</h3>
-      <span className="text-xs font-normal text-neutral-400">{dataSourceLabel(source)}</span>
+      {sectionKey && (
+        <SourceRef source={resolveSectionSource(dataSources, verificationLog, sectionKey)} />
+      )}
     </div>
   )
 }
@@ -232,9 +243,14 @@ function PersonalCourtsPanel({ caseData }: { caseData: Case }) {
               <p className="font-medium text-neutral-900">{personName}</p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-neutral-500 mt-1">
                 <span className="font-mono">ИИН: {iin}</span>
-                {meta?.role && <span>Роль: {meta.role}</span>}
-                {meta?.companyName && <span>Компания: {meta.companyName}</span>}
+                {meta?.role && <span>{meta.role}</span>}
               </div>
+              {(meta?.companyName || meta?.companyBin) && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-sm text-neutral-700 mt-1.5 bg-neutral-50 rounded-md px-3 py-1.5 border border-neutral-100">
+                  {meta.companyName && <span className="font-medium">{meta.companyName}</span>}
+                  {meta.companyBin && <span className="font-mono text-neutral-500">БИН: {meta.companyBin}</span>}
+                </div>
+              )}
             </div>
             <DetailedCourtCasesList
               cases={cases}
@@ -287,6 +303,9 @@ function CourtsSection({
         iconClassName="text-amber-600"
         title="Судебные дела"
         source={courtsSource}
+        dataSources={caseData.dataSources}
+        verificationLog={caseData.verificationLog}
+        sectionKey="courts"
       />
       <div className="flex flex-wrap gap-2 mb-4">
         <button
@@ -394,6 +413,9 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           iconClassName="text-blue-600"
           title="Информация о компании"
           source={src('companyInfo')}
+          dataSources={dataSources}
+          verificationLog={caseData.verificationLog}
+          sectionKey="companyInfo"
         />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div>
@@ -422,13 +444,13 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           </div>
           {enrichment.companyInfo.operatingStatus && (
             <div>
-              <p className="text-neutral-500">Статус (Adata)</p>
+              <p className="text-neutral-500">Статус (<Abbr code="Adata">Adata</Abbr>)</p>
               <p className="text-neutral-900 capitalize">{enrichment.companyInfo.operatingStatus}</p>
             </div>
           )}
           {enrichment.companyInfo.legalForm && (
             <div>
-              <p className="text-neutral-500">ОПФ</p>
+              <p className="text-neutral-500"><Abbr code="ОПФ">ОПФ</Abbr></p>
               <p className="text-neutral-900">{enrichment.companyInfo.legalForm}</p>
             </div>
           )}
@@ -440,7 +462,7 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           )}
           {enrichment.companyInfo.sourceLink && (
             <div className="md:col-span-2">
-              <p className="text-neutral-500">Карточка Adata</p>
+              <p className="text-neutral-500">Карточка <Abbr code="Adata">Adata</Abbr></p>
               <a
                 href={enrichment.companyInfo.sourceLink}
                 target="_blank"
@@ -461,6 +483,9 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
             iconClassName="text-amber-600"
             title="Статус предприятия"
             source={src('companyInfo')}
+            dataSources={dataSources}
+            verificationLog={caseData.verificationLog}
+            sectionKey="companyInfo"
           />
           <ul className="space-y-2">
             {enrichment.statusFlags!.map((flag, i) => (
@@ -482,6 +507,9 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           iconClassName="text-green-600"
           title="Налоговая информация"
           source={src('taxes')}
+          dataSources={dataSources}
+          verificationLog={caseData.verificationLog}
+          sectionKey="taxes"
         />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
           <div>
@@ -535,6 +563,9 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           iconClassName="text-red-600"
           title="Факторы риска (riskFactor)"
           source={src('sanctions')}
+          dataSources={dataSources}
+          verificationLog={caseData.verificationLog}
+          sectionKey="sanctions"
         />
         {src('sanctions') === 'adata' &&
         ((enrichment.riskFlags?.length ?? 0) > 0 || enrichment.sanctions.isOnList) ? (
@@ -553,7 +584,7 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
           </ul>
         ) : src('sanctions') === 'adata' ? (
           <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-            <p className="text-green-700">Критические факторы риска не выявлены</p>
+            <p className="text-green-700">Факторы (riskFactor) в источнике не указаны</p>
           </div>
         ) : (
           <p className="text-sm text-neutral-500">Нет данных</p>
@@ -568,6 +599,9 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
             iconClassName="text-neutral-600"
             title="Контакты (kzCoContact)"
             source={src('companyInfo')}
+            dataSources={dataSources}
+            verificationLog={caseData.verificationLog}
+            sectionKey="companyInfo"
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
             {(enrichment.contacts?.phones?.length ?? 0) > 0 && (
@@ -601,6 +635,9 @@ function DataTab({ caseData, onRefresh }: { caseData: Case; onRefresh?: () => vo
             iconClassName="text-neutral-600"
             title="Банковские реквизиты"
             source={src('companyInfo')}
+            dataSources={dataSources}
+            verificationLog={caseData.verificationLog}
+            sectionKey="companyInfo"
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
             {enrichment.requisites.iik && (
@@ -690,57 +727,31 @@ function AssessmentTab({ caseData }: { caseData: Case }) {
   const conclusionSource = sectionSource(dataSources, 'conclusion')
 
   if (!assessment) {
-    return <LoadingGif message="Готовим оценку риска…" />
+    return <LoadingGif message="Готовим заключение…" />
   }
-
-  const riskConfig: Record<string, { bg: string; border: string; text: string; label: string }> = {
-    low: { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700', label: 'Низкий риск' },
-    medium: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', label: 'Средний риск' },
-    high: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', label: 'Высокий риск' },
-    critical: { bg: 'bg-red-100', border: 'border-red-400', text: 'text-red-900', label: 'Критический риск' },
-  }
-
-  const config = riskConfig[assessment.riskLevel] ?? riskConfig.high
 
   return (
     <div className="space-y-6">
-      {/* Risk Level */}
-      <div className={`${config.bg} border ${config.border} rounded-xl p-6`}>
-        <div className="flex items-center gap-3 mb-4">
-          <div className={`w-12 h-12 rounded-full ${config.bg} border-2 ${config.border} flex items-center justify-center`}>
-            <span className={`text-2xl font-bold ${config.text}`}>
-              {assessment.riskLevel === 'low' ? 'L' : assessment.riskLevel === 'medium' ? 'M' : assessment.riskLevel === 'critical' ? 'C' : 'H'}
-            </span>
-          </div>
-          <div>
-            <p className={`text-lg font-semibold ${config.text}`}>{config.label}</p>
-            <p className="text-sm text-neutral-500">
-              Автоматическая оценка{' '}
-              <span className="text-neutral-400">{dataSourceLabel(assessmentSource)}</span>
-            </p>
-          </div>
-        </div>
-        <p className="text-neutral-700">{assessment.summary}</p>
-      </div>
-
-      {/* Flags */}
+      {/* Findings */}
       {assessment.flags.length > 0 && (
         <div className="bg-white rounded-xl border border-neutral-200 p-5">
-          <h3 className="font-semibold text-neutral-900 mb-4">Выявленные факторы</h3>
+          <div className="flex items-center gap-2 mb-4 flex-wrap">
+            <h3 className="font-semibold text-neutral-900">Выявленные факторы</h3>
+            <span className="text-xs font-normal text-neutral-400">
+              {dataSourceLabel(assessmentSource)}
+            </span>
+          </div>
           <div className="space-y-2">
             {assessment.flags.map((flag, i) => (
               <div
                 key={i}
-                className={`flex items-start gap-3 p-3 rounded-lg ${
-                  flag.type === 'danger' ? 'bg-red-50' :
-                  flag.type === 'warning' ? 'bg-amber-50' : 'bg-blue-50'
-                }`}
+                className="flex items-start gap-3 p-3 rounded-lg bg-neutral-50"
               >
-                <AlertTriangle className={`w-5 h-5 flex-shrink-0 ${
-                  flag.type === 'danger' ? 'text-red-600' :
-                  flag.type === 'warning' ? 'text-amber-600' : 'text-blue-600'
-                }`} />
-                <p className="text-sm text-neutral-700">{flag.message}</p>
+                <Info className="w-5 h-5 flex-shrink-0 text-neutral-400" />
+                <p className="text-sm text-neutral-700">
+                  {flag.message}
+                  <SourceRef provider="Adata" />
+                </p>
               </div>
             ))}
           </div>
@@ -763,21 +774,6 @@ function AssessmentTab({ caseData }: { caseData: Case }) {
           <p className="text-sm text-neutral-600">Генерация заключения ИИ…</p>
         </div>
       ) : null}
-
-      {/* Recommendations */}
-      <div className="bg-white rounded-xl border border-neutral-200 p-5">
-        <h3 className="font-semibold text-neutral-900 mb-4">Рекомендации</h3>
-        <ul className="space-y-2">
-          {assessment.recommendations.map((rec, i) => (
-            <li key={i} className="flex items-start gap-2 text-sm text-neutral-700">
-              <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center flex-shrink-0 text-xs font-medium">
-                {i + 1}
-              </span>
-              {rec}
-            </li>
-          ))}
-        </ul>
-      </div>
     </div>
   )
 }
@@ -991,128 +987,6 @@ function ChatTab({ caseData }: { caseData: Case }) {
   )
 }
 
-// ── Scoring Tab ───────────────────────────────────────────────────────────────
-
-const METRIC_LABELS: Record<string, string> = {
-  sanctions: 'Международные санкции',
-  courts: 'Судебная активность',
-  taxes: 'Налоговый комплаенс',
-  legal_status: 'Правовой статус',
-  pep: 'PEP-скрининг физлиц',
-  adverse_media: 'Негативные публикации',
-  affiliate_risk: 'Риск аффилиатов',
-}
-
-const METRIC_HINTS: Record<string, string> = {
-  sanctions: 'LSEG WC1 + критические флаги КЗ (не налоговый риск)',
-  courts: 'Судебные дела компании и руководителя (Adata)',
-  taxes: 'Задолженность и степень налогового риска (Adata)',
-  legal_status: 'Регистрация, ликвидация, финансовые проблемы',
-  pep: 'Политически значимые лица (LSEG)',
-  adverse_media: 'Негативные публикации (LSEG Media-Check)',
-  affiliate_risk: 'Риск по дереву связей',
-}
-
-const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
-  lseg: { label: 'LSEG WC1', cls: 'bg-purple-100 text-purple-700' },
-  adata: { label: 'Adata', cls: 'bg-blue-100 text-blue-700' },
-  affiliate_tree: { label: 'Аффилиаты', cls: 'bg-emerald-100 text-emerald-700' },
-  none: { label: 'Нет данных', cls: 'bg-neutral-100 text-neutral-500' },
-}
-
-function ScoringTab({ caseData }: { caseData: Case }) {
-  const breakdown: ScoreMetric[] = caseData.scoreBreakdown || []
-  const totalScore = caseData.totalScore ?? null
-  const lsegAt = caseData.lseg?.screenedAt
-
-  if (breakdown.length === 0) {
-    return (
-      <div className="bg-white rounded-xl border border-neutral-200 p-8 text-center">
-        <TrendingUp className="w-10 h-10 text-neutral-300 mx-auto mb-3" />
-        <p className="text-neutral-500 mb-2">Скоринг ещё не рассчитан</p>
-        <p className="text-sm text-neutral-400">Дождитесь статуса «готово» или обновите проверку.</p>
-      </div>
-    )
-  }
-
-  const riskColor =
-    caseData.riskLevel === 'high'
-      ? 'text-red-600 bg-red-50 border-red-200'
-      : caseData.riskLevel === 'medium'
-        ? 'text-amber-600 bg-amber-50 border-amber-200'
-        : 'text-emerald-600 bg-emerald-50 border-emerald-200'
-
-  return (
-    <div className="space-y-4">
-      {/* Total score card */}
-      <div className={`rounded-xl border p-5 ${riskColor}`}>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium opacity-70">Итоговый скоринг</p>
-            <p className="text-4xl font-bold mt-1">
-              {totalScore !== null ? totalScore.toFixed(1) : '—'}
-              <span className="text-lg font-normal opacity-60"> / 100</span>
-            </p>
-          </div>
-          <div className="text-right text-sm opacity-70">
-            <p>Уровень риска</p>
-            <p className="text-lg font-semibold capitalize mt-0.5">
-              {caseData.riskLevel === 'critical' ? 'Критический' : caseData.riskLevel === 'high' ? 'Высокий' : caseData.riskLevel === 'medium' ? 'Средний' : 'Низкий'}
-            </p>
-          </div>
-        </div>
-        {lsegAt && (
-          <p className="text-xs opacity-60 mt-3">
-            LSEG WC1 скрининг: {new Date(lsegAt).toLocaleString('ru-RU')}
-          </p>
-        )}
-      </div>
-
-      {/* Metric breakdown */}
-      <div className="bg-white rounded-xl border border-neutral-200 p-5 space-y-4">
-        <h3 className="font-semibold text-neutral-900">Разбивка по метрикам</h3>
-        {breakdown.map((m) => {
-          const pct = m.max_points > 0 ? (m.points / m.max_points) * 100 : 0
-          const barColor =
-            pct >= 70
-              ? 'bg-red-500'
-              : pct >= 35
-                ? 'bg-amber-500'
-                : 'bg-emerald-500'
-          const badge = SOURCE_BADGE[m.source] || SOURCE_BADGE.none
-          return (
-            <div key={m.metric}>
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-neutral-800">
-                    {METRIC_LABELS[m.metric] || m.metric}
-                  </span>
-                  <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>
-                    {badge.label}
-                  </span>
-                </div>
-                <span className="text-sm text-neutral-500">
-                  {m.points.toFixed(1)} / {m.max_points}
-                </span>
-              </div>
-              <div className="h-2 bg-neutral-100 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all ${barColor}`}
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              {METRIC_HINTS[m.metric] && (
-                <p className="text-xs text-neutral-400 mt-0.5">{METRIC_HINTS[m.metric]}</p>
-              )}
-              <p className="text-xs text-neutral-600 mt-1 leading-relaxed">{m.reason}</p>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
 // ── LSEG Tab ──────────────────────────────────────────────────────────────────
 
 const STRENGTH_CONFIG: Record<string, { cls: string; label: string }> = {
@@ -1287,7 +1161,7 @@ function SanctionEntityCard({
         {isCritical && (
           <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-medium bg-red-100 text-red-700 border border-red-200 shrink-0">
             <AlertTriangle className="w-3 h-3" />
-            Критический
+            Под санкциями
           </span>
         )}
       </div>
@@ -1313,7 +1187,7 @@ function SanctionSummaryHeader({
       <div className="flex items-center gap-3 px-5 py-4 bg-red-600 text-white">
         <AlertTriangle className="w-5 h-5 shrink-0" />
         <p className="text-sm font-semibold">
-          Критический риск — {sanctionedCount} аффилиат
+          Санкционные аффилиаты: {sanctionedCount} аффилиат
           {sanctionedCount === 1 ? '' : sanctionedCount < 5 ? 'а' : 'ов'} под международными санкциями
         </p>
       </div>
@@ -1358,7 +1232,7 @@ function PepHitCard({ hit }: { hit: LsegSanctionHit }) {
             {hit.submittedName || hit.primaryName || '—'}
           </p>
           {hit.primaryName && hit.primaryName !== hit.submittedName && (
-            <p className="text-xs text-neutral-500 mt-0.5">WC1: {hit.primaryName}</p>
+            <p className="text-xs text-neutral-500 mt-0.5"><Abbr code="WC1">WC1</Abbr>: {hit.primaryName}</p>
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -1481,9 +1355,12 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
       {lseg && (
         <>
           <div className="rounded-xl bg-white border border-neutral-200 p-5">
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
               <ShieldCheck className="w-5 h-5 text-purple-600" />
-              <h3 className="font-semibold text-neutral-900">LSEG World-Check One</h3>
+              <h3 className="font-semibold text-neutral-900">
+                <Abbr code="LSEG">LSEG</Abbr> World-Check One
+              </h3>
+              <SourceRef provider="LSEG" />
             </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
@@ -1493,7 +1370,7 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
                 </p>
               </div>
               <div>
-                <p className="text-neutral-500">Рейтинг WC1</p>
+                <p className="text-neutral-500">Рейтинг <Abbr code="WC1">WC1</Abbr></p>
                 <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${riskBadge(lseg.wc1Rating)}`}>
                   {lseg.wc1Rating || 'N/A'}
                 </span>
@@ -1506,7 +1383,10 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
             (lseg.sanctions.hits ?? []).length > 0) && (
             <div className="rounded-xl bg-white border border-neutral-200 p-5">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-neutral-900">Санкционные списки (компания)</h3>
+                <h3 className="font-semibold text-neutral-900 flex items-center gap-1 flex-wrap">
+                  Санкционные списки (компания)
+                  <SourceRef provider="LSEG" />
+                </h3>
                 <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
                   lseg.sanctions.isOnList
                     ? 'bg-red-100 text-red-700 border border-red-200'
@@ -1554,7 +1434,10 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
           <div className="rounded-xl bg-amber-50 border border-amber-200 p-5">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <h3 className="font-semibold text-neutral-900">PEP-скрининг (физические лица)</h3>
+                <h3 className="font-semibold text-neutral-900 flex items-center gap-1 flex-wrap">
+                  <Abbr code="PEP">PEP</Abbr>-скрининг (физические лица)
+                  <SourceRef provider="LSEG" />
+                </h3>
                 <p className="text-xs text-neutral-500 mt-0.5">Директор и руководство компании</p>
               </div>
               <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
@@ -1624,7 +1507,10 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
 
       {pepOnlyEntities.length > 0 && (
         <div className="rounded-xl bg-amber-50 border border-amber-200 p-5 space-y-3">
-          <h3 className="font-semibold text-neutral-900">PEP среди аффилиатов</h3>
+          <h3 className="font-semibold text-neutral-900 flex items-center gap-1 flex-wrap">
+            <Abbr code="PEP">PEP</Abbr> среди аффилиатов
+            <SourceRef provider="LSEG" />
+          </h3>
           {pepOnlyEntities.map((entity, i) => (
             <div key={i}>
               <p className="text-sm font-medium text-neutral-800 mb-2">{entity.name}</p>
@@ -1778,13 +1664,6 @@ function buildDataCoverage(caseData: Case) {
       endpoint: 'World-Check One (extended)',
     },
     {
-      label: 'Скоринг (7 метрик)',
-      provider: 'ИИ',
-      available: !!caseData.scoreBreakdown,
-      detail: caseData.totalScore != null ? `Балл: ${caseData.totalScore}` : undefined,
-      endpoint: 'Внутренний алгоритм',
-    },
-    {
       label: 'Полный ИИ-отчёт',
       provider: 'ИИ',
       available:
@@ -1841,7 +1720,7 @@ function VerificationLogTab({ caseData }: { caseData: Case }) {
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <p className="text-xs font-medium text-neutral-800 leading-tight">{item.label}</p>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-500 border border-neutral-200 shrink-0">
-                    {item.provider}
+                    <Abbr code={item.provider}>{item.provider}</Abbr>
                   </span>
                 </div>
                 {item.detail && (
@@ -1911,7 +1790,7 @@ function VerificationLogTab({ caseData }: { caseData: Case }) {
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-[11px] font-mono text-neutral-400 min-w-[68px]">{fmtTime(e.ts)}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border font-semibold uppercase tracking-wide ${cfg.headerCls}`}>
-                        {e.provider}
+                        <Abbr code={e.provider}>{e.provider}</Abbr>
                       </span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
                         ok ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'
@@ -2045,22 +1924,13 @@ export function CaseDetail({ caseId }: { caseId: string }) {
 
   const tabs: { id: Tab; label: string; icon: typeof Building2 }[] = [
     { id: 'data', label: 'Граф связей', icon: Network },
-    { id: 'scoring', label: 'Скоринг', icon: TrendingUp },
     { id: 'lseg', label: 'LSEG / Санкции', icon: ShieldCheck },
     { id: 'log', label: 'Лог проверки', icon: ListChecks },
     { id: 'documents', label: 'Документы', icon: FileText },
-    { id: 'assessment', label: 'Заключение ИИ', icon: AlertTriangle },
+    // { id: 'assessment', label: 'Заключение ИИ', icon: AlertTriangle },
     { id: 'chat', label: 'Чат с ИИ', icon: MessageSquare },
   ]
 
-  const riskConfig: Record<string, { bg: string; text: string; dot: string }> = {
-    low: { bg: 'bg-emerald-100', text: 'text-emerald-700', dot: 'bg-emerald-500' },
-    medium: { bg: 'bg-amber-100', text: 'text-amber-700', dot: 'bg-amber-500' },
-    high: { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
-    critical: { bg: 'bg-red-200', text: 'text-red-900', dot: 'bg-red-700' },
-  }
-
-  const risk = caseData.riskLevel ? (riskConfig[caseData.riskLevel] ?? riskConfig.high) : null
   const displayName = caseDisplayName(caseData)
 
   const handleDownloadReport = async () => {
@@ -2083,18 +1953,6 @@ export function CaseDetail({ caseId }: { caseId: string }) {
           <div>
             <div className="flex items-center gap-3 mb-2">
               <h1 className="text-2xl font-semibold text-neutral-900">{displayName}</h1>
-              {risk && (
-                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${risk.bg} ${risk.text}`}>
-                  <span className={`w-2 h-2 rounded-full ${risk.dot}`} />
-                  {caseData.riskLevel === 'critical' ? 'Критический риск' : caseData.riskLevel === 'high' ? 'Высокий риск' : caseData.riskLevel === 'medium' ? 'Средний риск' : 'Низкий риск'}
-                </span>
-              )}
-              {caseData.totalScore !== null && caseData.totalScore !== undefined && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-neutral-100 text-neutral-600">
-                  <TrendingUp className="w-3 h-3" />
-                  {caseData.totalScore.toFixed(1)} / 100
-                </span>
-              )}
               {caseData.lseg && (() => {
                 const extEntities = caseData.lsegExtended ? Object.values(caseData.lsegExtended) : []
                 const hasSanctionedAffiliate = extEntities.some(e => e.isOnSanctionList)
@@ -2106,7 +1964,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
                 ) : (
                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
                     <ShieldCheck className="w-3 h-3" />
-                    LSEG WC1
+                    <Abbr code="LSEG">LSEG</Abbr> <Abbr code="WC1">WC1</Abbr>
                   </span>
                 )
               })()}
@@ -2137,13 +1995,13 @@ export function CaseDetail({ caseId }: { caseId: string }) {
                 </span>
               )}
             </Link>
-            <Link
+            {/* <Link
               href={`/cases/${caseData.id}/report`}
               className="flex items-center gap-2 px-4 py-2.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm font-medium rounded-lg transition-colors"
             >
               <FileText className="w-4 h-4" />
               Отчёт PDF
-            </Link>
+            </Link> */}
             <button
               type="button"
               onClick={handleDownloadReport}
@@ -2186,7 +2044,6 @@ export function CaseDetail({ caseId }: { caseId: string }) {
       {activeTab === 'data' && (
         <DataTab caseData={caseData} onRefresh={() => refreshCase(caseId)} />
       )}
-      {activeTab === 'scoring' && <ScoringTab caseData={caseData} />}
       {activeTab === 'lseg' && <LsegTab caseData={caseData} focusEntity={focusEntity} />}
       {activeTab === 'log' && <VerificationLogTab caseData={caseData} />}
       {activeTab === 'documents' && <DocumentsTab caseData={caseData} />}

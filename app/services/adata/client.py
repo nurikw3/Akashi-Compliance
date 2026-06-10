@@ -104,6 +104,17 @@ def _check_url() -> str:
     return f"{base}/info/check/{settings.adata_token}"
 
 
+ADATA_COMPANY_URL_TEMPLATE = "https://pk.adata.kz/company/{bin}"
+
+
+def adata_company_url(bin_value: str | None) -> str | None:
+    """Public Adata company page for a 12-digit BIN/IIN (the data source URL)."""
+    digits = "".join(ch for ch in str(bin_value or "") if ch.isdigit())
+    if len(digits) != 12:
+        return None
+    return ADATA_COMPANY_URL_TEMPLATE.format(bin=digits)
+
+
 def _token_path(suffix: str) -> str:
     base = settings.adata_base_url.rstrip("/")
     return f"{base}/{suffix}/{settings.adata_token}"
@@ -204,18 +215,31 @@ async def _poll(
     *,
     attempts: int | None = None,
     delay: float | None = None,
+    require_key: str | None = None,
 ) -> dict[str, Any]:
+    """Poll the Adata job until ``data`` is ready.
+
+    Adata fills the ``data`` object progressively, so the first non-null payload
+    can be partial (e.g. ``litigation``/``taxDeductions`` ready but ``basic`` —
+    company name/director — not yet). When ``require_key`` is given, keep polling
+    until that key is populated; if it never appears, fall back to the last
+    partial payload instead of failing outright.
+    """
     attempts = attempts or settings.adata_poll_attempts
     delay = delay or settings.adata_poll_delay_seconds
     check_url = _check_url()
+    last_data: dict[str, Any] | None = None
     for _ in range(attempts):
         await asyncio.sleep(delay)
         response = await client.get(check_url, params={"token": job_token})
         response.raise_for_status()
         data = response.json()
-        if data.get("data") is not None:
-            return data
-    return {"error": "timeout"}
+        payload = data.get("data")
+        if payload is not None:
+            if require_key is None or (isinstance(payload, dict) and payload.get(require_key)):
+                return data
+            last_data = data  # partial — keep waiting for require_key
+    return last_data if last_data is not None else {"error": "timeout"}
 
 
 async def _get_endpoint(
@@ -268,7 +292,9 @@ async def fetch_company_info(bin_value: str, *, case_id: str | None = None) -> d
                 return payload["data"]
             raise AdataError("Company info start did not return a job token or data")
 
-        result = await _poll(client, payload["token"])
+        # Wait for ``basic`` (name/director) so we don't cache a partial response
+        # that misses company info while taxes/courts are already populated.
+        result = await _poll(client, payload["token"], require_key="basic")
         if result.get("error"):
             raise AdataError(f"Company info poll failed: {result['error']}")
         data = result.get("data")
@@ -723,6 +749,16 @@ def _normalize_individual_court_case(raw: dict[str, Any]) -> dict[str, Any]:
         participants = [str(s) for s in sides if s]
     # Do not map generic ``sides`` to defendants — that breaks role (третья сторона vs ответчик).
 
+    # Status often lives only in the latest history event, not as a top-level
+    # field — fall back to it so the case status is not shown as "Данные отсутствуют".
+    status = (
+        raw.get("status")
+        or raw.get("court_case_status")
+        or raw.get("state")
+    )
+    if not status and history:
+        status = history[-1].get("name") or None
+
     return {
         "number": raw.get("number"),
         "result": raw.get("result") or raw.get("court_case_result"),
@@ -731,7 +767,7 @@ def _normalize_individual_court_case(raw: dict[str, Any]) -> dict[str, Any]:
         "court": raw.get("court"),
         "category": raw.get("category"),
         "judge": raw.get("judge"),
-        "status": raw.get("status"),
+        "status": status,
         "role": raw.get("role"),
         "defendants": defendants,
         "plaintiffs": plaintiffs,

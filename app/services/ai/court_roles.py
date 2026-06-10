@@ -31,7 +31,9 @@ def party_list_contains_person(name_key: str, parties: list[Any]) -> bool:
         party_key = normalize_person_name_key(party)
         if not party_key:
             continue
-        if name_key == party_key or (surname and surname in party_key):
+        # Точное совпадение ФИО либо совпадение фамилии как отдельного слова
+        # (а не подстроки — чтобы «Ким» не совпадал с «Кимаев»).
+        if name_key == party_key or (surname and surname in party_key.split()):
             return True
     return False
 
@@ -45,26 +47,58 @@ def party_list_role_for_person(case: dict[str, Any], person_name: str) -> str | 
     return None
 
 
+# Исход дела, означающий взыскание/осуждение стороны (не «третьего лица»).
+_SANCTION_OUTCOME_RE = re.compile(
+    r"обвинительн\w*\s+приговор|признан\w*\s+виновн|осужд|"
+    r"наложени\w*\s+(?:админист\w*\s+)?взыскан",
+    re.IGNORECASE,
+)
+
+
+def _case_sanction_outcome(case: dict[str, Any]) -> bool:
+    text = " ".join(str(case.get(k) or "") for k in ("result", "status"))
+    return bool(_SANCTION_OUTCOME_RE.search(text))
+
+
 def resolve_person_case_role(case: dict[str, Any], person_name: str) -> dict[str, Any]:
     """
-    Объединяет role из Adata и попадание ФИО в списки сторон.
+    Объединяет role из Adata и фактическое присутствие ФИО в данных дела.
 
     - display_role: для таблицы/отчёта
-    - adata_role: для red flag (только явный ответчик в Adata)
-    - has_discrepancy: роль Adata ≠ список сторон — сигнал для ручной проверки
+    - adata_role: роль по полю Adata `role`
+    - party_list_role: роль по спискам defendants/plaintiffs
+    - in_participants: ФИО присутствует в списке участников дела
+    - has_discrepancy: поле `role` противоречит фактическим данным API
     """
     adata_role = normalize_case_role(case.get("role"))
     party_role = party_list_role_for_person(case, person_name)
-    has_discrepancy = bool(
-        adata_role != "Не указано"
-        and party_role
-        and adata_role != party_role
+    name_key = normalize_person_name_key(person_name)
+    in_participants = party_list_contains_person(
+        name_key, case.get("participants") or []
+    )
+    sanction_outcome = _case_sanction_outcome(case)
+
+    # Классическое расхождение: роль Adata ≠ роль по спискам сторон.
+    list_discrepancy = bool(
+        adata_role != "Не указано" and party_role and adata_role != party_role
     )
 
-    if has_discrepancy:
+    # «Третья сторона», но человек сам числится участником дела (часто единственным)
+    # — третье лицо не является стороной; роль требует сверки.
+    third_party_conflict = adata_role == "Третья сторона" and in_participants
+
+    has_discrepancy = bool(list_discrepancy or third_party_conflict)
+
+    if list_discrepancy:
         display_role = (
-            f"{adata_role} ⚠️ (в списке: {party_role} — сверить с материалами дела)"
+            f"{adata_role} (в списке сторон: {party_role} — сверить с материалами дела)"
         )
+    elif third_party_conflict:
+        if sanction_outcome:
+            note = "числится участником дела, по которому вынесено взыскание/приговор"
+        else:
+            note = "числится среди участников дела"
+        display_role = f"Третья сторона ({note} — сверить роль)"
     elif adata_role != "Не указано":
         display_role = adata_role
     elif party_role:
@@ -75,6 +109,7 @@ def resolve_person_case_role(case: dict[str, Any], person_name: str) -> dict[str
     return {
         "adata_role": adata_role,
         "party_list_role": party_role,
+        "in_participants": in_participants,
         "has_discrepancy": has_discrepancy,
         "display_role": display_role,
     }

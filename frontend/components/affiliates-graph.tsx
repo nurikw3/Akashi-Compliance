@@ -34,9 +34,9 @@ import {
 } from 'lucide-react'
 import { LoadingGif } from '@/components/loading-gif'
 import { MarkdownContent } from '@/components/markdown-content'
+import { Abbr } from '@/components/ui/abbr'
 import { fetchNodeReport, lookupCompany, rebuildAffiliateTree } from '@/lib/api'
 import { useCases } from '@/lib/cases-context'
-import { dataSourceLabel } from '@/lib/data-source-label'
 import type {
   AffiliateTree,
   AffiliateTreeNode,
@@ -55,7 +55,6 @@ interface GraphNode {
   hasReport?: boolean
   probeError?: string
   level?: number
-  riskLevel?: 'low' | 'medium' | 'high' | 'critical' | null
   isPep?: boolean
   isBeneficiary?: boolean
   isSanctioned?: boolean
@@ -243,14 +242,6 @@ function toGraphNode(node: AffiliateTreeNode): GraphNode {
   }
 }
 
-function riskDotColor(risk?: GraphNode['riskLevel']): string | null {
-  if (risk === 'low') return 'bg-emerald-500'
-  if (risk === 'medium') return 'bg-amber-400'
-  if (risk === 'high') return 'bg-red-500'
-  if (risk === 'critical') return 'bg-red-700'
-  return null
-}
-
 function getLayoutedElements(nodes: Node[], edges: Edge[]) {
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
@@ -320,7 +311,6 @@ function AffiliateFlowNode({ data }: NodeProps<Node<AffiliateNodeData>>) {
   const isMain = data.type === 'main'
   const isPerson = data.type === 'person'
   const isForeign = isForeignEntity(data)
-  const riskDot = riskDotColor(data.riskLevel)
   const roleLabel = formatRoleLabel(data)
 
   let borderClass = 'border-neutral-300 bg-neutral-100 text-neutral-900'
@@ -370,12 +360,6 @@ function AffiliateFlowNode({ data }: NodeProps<Node<AffiliateNodeData>>) {
               >
                 {truncateLabel(data.name, 22)}
               </p>
-              {riskDot && (
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 mt-1 ${riskDot}`}
-                  title={`Риск: ${data.riskLevel}`}
-                />
-              )}
             </div>
             {roleLabel && (
               <p
@@ -619,7 +603,7 @@ function NodePopup({ node, position, onClose, onViewFull, onCheckLseg }: NodePop
   const buttonEnabled = isForeign || canLookup
   const handlePrimaryAction = isForeign ? onCheckLseg : onViewFull
   const primaryLabel = isForeign
-    ? 'Проверить в LSEG'
+    ? <>Проверить в <Abbr code="LSEG">LSEG</Abbr></>
     : node.hasReport
       ? 'Полное заключение'
       : 'Загрузить заключение'
@@ -679,7 +663,7 @@ function NodePopup({ node, position, onClose, onViewFull, onCheckLseg }: NodePop
           )}
           {isForeign && (
             <p className="text-xs text-neutral-400 mt-2 text-center">
-              Откроется вкладка LSEG родительского дела
+              Откроется вкладка <Abbr code="LSEG">LSEG</Abbr> родительского дела
             </p>
           )}
         </div>
@@ -727,7 +711,6 @@ function FullReportModal({
     }
   }, [caseId, node.iinBin])
 
-  const riskLevel = report?.riskLevel || report?.assessment?.riskLevel
   const enrichment = report?.enrichment
   const assessment = report?.assessment
   const openCaseId = report?.openCaseId
@@ -809,15 +792,6 @@ function FullReportModal({
           {report && !loading && (
             <>
               <p className="text-xs text-neutral-500">{sourceLabels[report.source]}</p>
-              {riskLevel && (
-                <p className="text-sm font-medium text-neutral-800">
-                  Риск:{' '}
-                  {riskLevel === 'low' ? 'низкий' : riskLevel === 'medium' ? 'средний' : 'высокий'}
-                </p>
-              )}
-              {assessment?.summary && (
-                <p className="text-sm text-neutral-700">{assessment.summary}</p>
-              )}
               {enrichment && (
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="bg-neutral-50 rounded-lg p-3">
@@ -830,10 +804,10 @@ function FullReportModal({
                   </div>
                 </div>
               )}
-              {assessment?.recommendations && assessment.recommendations.length > 0 && (
+              {assessment?.flags && assessment.flags.length > 0 && (
                 <ul className="text-sm space-y-1 text-neutral-700">
-                  {assessment.recommendations.map((r, i) => (
-                    <li key={i}>• {r}</li>
+                  {assessment.flags.map((f, i) => (
+                    <li key={i}>• {f.message}</li>
                   ))}
                 </ul>
               )}
@@ -1013,11 +987,18 @@ export function AffiliatesGraph({
           <h3 className="font-semibold text-neutral-900 flex items-center gap-2">
             <GitBranch className="w-5 h-5 text-neutral-600" />
             Дерево связей
-            <span className="text-xs font-normal text-neutral-400">{dataSourceLabel(source)}</span>
           </h3>
           <p className="text-xs text-neutral-500 mt-1">
             Колёсико — масштаб · «Подробнее» на узле — сведения · «± дочерние» — только ветка графа
           </p>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+            <span className="flex items-center gap-1.5 text-[11px] text-neutral-500"><span className="inline-block w-3 h-3 rounded border border-blue-500 bg-blue-700" />Проверяемая компания</span>
+            <span className="flex items-center gap-1.5 text-[11px] text-neutral-500"><span className="inline-block w-3 h-3 rounded border border-rose-300 bg-rose-100" />Санкции / бенефициар</span>
+            <span className="flex items-center gap-1.5 text-[11px] text-neutral-500"><span className="inline-block w-3 h-3 rounded border border-amber-300 bg-amber-50" />ФЛ / ПЭП</span>
+            <span className="flex items-center gap-1.5 text-[11px] text-neutral-500"><span className="inline-block w-3 h-3 rounded border border-orange-400 bg-orange-50" />Нерезидент</span>
+            <span className="flex items-center gap-1.5 text-[11px] text-neutral-500"><span className="inline-block w-3 h-3 rounded border border-blue-400 bg-white" />Есть отчёт</span>
+            <span className="flex items-center gap-1.5 text-[11px] text-neutral-500"><span className="inline-block w-3 h-3 rounded border border-neutral-300 bg-neutral-100" />Прочие</span>
+          </div>
         </div>
         <button
           type="button"

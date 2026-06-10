@@ -11,14 +11,6 @@ export type DataSources = {
   conclusion: DataSourceKind
 }
 
-export interface ScoreMetric {
-  metric: string
-  points: number
-  max_points: number
-  reason: string
-  source: 'adata' | 'lseg' | 'affiliate_tree' | 'none'
-}
-
 export interface LsegSanctionHit {
   resultId: string
   primaryName: string
@@ -101,7 +93,6 @@ export interface NodeReport {
   enrichment?: EnrichmentData
   assessment?: Assessment
   dataSources?: DataSources
-  riskLevel?: string | null
   conclusion?: string
   cachedAt?: string
 }
@@ -140,6 +131,7 @@ export interface IndividualCourtsMeta {
   name: string
   role?: string
   companyName?: string
+  companyBin?: string
 }
 
 export interface VerificationLogEvent {
@@ -169,7 +161,6 @@ export interface Case {
   name: string
   iinBin: string
   status: 'pending' | 'enriching' | 'ready' | 'error'
-  riskLevel: 'low' | 'medium' | 'high' | null
   createdAt: Date
   enrichment?: EnrichmentData
   assessment?: Assessment
@@ -183,8 +174,6 @@ export interface Case {
   parentCaseId?: string | null
   lseg?: LsegData | null
   lsegExtended?: Record<string, LsegExtendedEntity> | null
-  scoreBreakdown?: ScoreMetric[] | null
-  totalScore?: number | null
   affiliateProfiles?: Record<string, { courts?: EnrichmentData['courts'] }>
   beneficiary?: Record<string, unknown>[]
   individualCourts?: Record<string, IndividualCourtCase[]>
@@ -276,10 +265,7 @@ export interface EnrichmentData {
 }
 
 export interface Assessment {
-  riskLevel: 'low' | 'medium' | 'high'
-  summary: string
-  recommendations: string[]
-  flags: { type: 'warning' | 'danger' | 'info'; message: string }[]
+  flags: { type: 'warning' | 'danger' | 'info' | 'fact'; message: string }[]
 }
 
 export interface Document {

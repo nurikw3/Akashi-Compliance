@@ -1,15 +1,15 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useCases } from '@/lib/cases-context'
+import { Abbr } from '@/components/ui/abbr'
 import {
   Printer,
   ArrowLeft,
   CheckSquare,
   Square,
   FileText,
-  TrendingUp,
   ShieldCheck,
   Gavel,
   Building2,
@@ -20,25 +20,13 @@ import {
 
 const SECTIONS = [
   { id: 'companyInfo', label: 'Общие сведения о компании', icon: Building2 },
-  { id: 'scoring', label: 'Скоринг риска (7 метрик)', icon: TrendingUp },
   { id: 'lseg', label: 'LSEG / Санкции и PEP', icon: ShieldCheck },
   { id: 'courts', label: 'Судебные дела', icon: Gavel },
   { id: 'taxes', label: 'Налоговая информация', icon: FileText },
   { id: 'affiliates', label: 'Аффилированные лица', icon: Users },
   { id: 'conclusion', label: 'Заключение ИИ', icon: MessageSquare },
-  { id: 'assessment', label: 'Оценка рисков', icon: AlertTriangle },
+  { id: 'assessment', label: 'Выявленные факторы', icon: AlertTriangle },
 ]
-
-const RISK_LABELS = { low: 'Низкий', medium: 'Средний', high: 'Высокий' } as const
-const METRIC_LABELS: Record<string, string> = {
-  sanctions: 'Международные санкции',
-  courts: 'Судебная активность',
-  taxes: 'Налоговый комплаенс',
-  legal_status: 'Правовой статус',
-  pep: 'PEP-скрининг',
-  adverse_media: 'Негативные публикации',
-  affiliate_risk: 'Риск аффилиатов',
-}
 
 export default function ReportBuilderPage() {
   const params = useParams()
@@ -74,7 +62,6 @@ export default function ReportBuilderPage() {
   const enrichment = caseData.enrichment
   const assessment = caseData.assessment
   const lseg = caseData.lseg
-  const breakdown = caseData.scoreBreakdown || []
 
   const handlePrint = () => window.print()
 
@@ -169,22 +156,6 @@ export default function ReportBuilderPage() {
               {officer && <p className="mt-1">Составил: {officer}</p>}
             </div>
           </div>
-
-          {/* Risk summary */}
-          {caseData.riskLevel && (
-            <div className={`mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
-              caseData.riskLevel === 'high'
-                ? 'bg-red-100 text-red-700'
-                : caseData.riskLevel === 'medium'
-                  ? 'bg-amber-100 text-amber-700'
-                  : 'bg-emerald-100 text-emerald-700'
-            }`}>
-              Уровень риска: {RISK_LABELS[caseData.riskLevel]}
-              {caseData.totalScore !== null && caseData.totalScore !== undefined && (
-                <span className="opacity-70">· {caseData.totalScore.toFixed(1)} / 100</span>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Company Info */}
@@ -195,15 +166,15 @@ export default function ReportBuilderPage() {
               Общие сведения
             </h2>
             <div className="grid grid-cols-2 gap-3 text-sm">
-              {[
+              {([
                 ['Полное наименование', enrichment.companyInfo.fullName],
-                ['БИН/ИИН', caseData.iinBin],
+                [<><Abbr code="БИН">БИН</Abbr>/<Abbr code="ИИН">ИИН</Abbr></>, caseData.iinBin],
                 ['Дата регистрации', enrichment.companyInfo.registrationDate],
                 ['Адрес', enrichment.companyInfo.address],
                 ['Директор', enrichment.companyInfo.director],
                 ['Отрасль', enrichment.companyInfo.industry],
-              ].map(([k, v]) => (
-                <div key={k}>
+              ] as [ReactNode, string | undefined][]).map(([k, v], i) => (
+                <div key={i}>
                   <p className="text-neutral-500">{k}</p>
                   <p className="font-medium text-neutral-900">{v || '—'}</p>
                 </div>
@@ -212,44 +183,12 @@ export default function ReportBuilderPage() {
           </section>
         )}
 
-        {/* Scoring */}
-        {selected.has('scoring') && breakdown.length > 0 && (
-          <section className="mb-6">
-            <h2 className="text-base font-semibold text-neutral-900 mb-3 flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-blue-600" />
-              Скоринг риска
-            </h2>
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="bg-neutral-50 text-neutral-600 text-left">
-                  <th className="px-3 py-2 font-medium border border-neutral-200">Метрика</th>
-                  <th className="px-3 py-2 font-medium border border-neutral-200 w-24">Баллы</th>
-                  <th className="px-3 py-2 font-medium border border-neutral-200">Источник</th>
-                  <th className="px-3 py-2 font-medium border border-neutral-200">Обоснование</th>
-                </tr>
-              </thead>
-              <tbody>
-                {breakdown.map((m) => (
-                  <tr key={m.metric} className="border-b border-neutral-100">
-                    <td className="px-3 py-2 border border-neutral-200">{METRIC_LABELS[m.metric] || m.metric}</td>
-                    <td className="px-3 py-2 border border-neutral-200 text-center font-mono">
-                      {m.points.toFixed(1)}/{m.max_points}
-                    </td>
-                    <td className="px-3 py-2 border border-neutral-200 uppercase text-xs text-neutral-500">{m.source}</td>
-                    <td className="px-3 py-2 border border-neutral-200 text-neutral-600">{m.reason}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        )}
-
         {/* LSEG */}
         {selected.has('lseg') && lseg && (
           <section className="mb-6">
             <h2 className="text-base font-semibold text-neutral-900 mb-3 flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-purple-600" />
-              LSEG World-Check One
+              <Abbr code="LSEG">LSEG</Abbr> World-Check One
             </h2>
             <div className="text-sm space-y-2">
               <p>Дата скрининга: {new Date(lseg.screenedAt).toLocaleString('ru-RU')}</p>
@@ -262,7 +201,7 @@ export default function ReportBuilderPage() {
                 </strong>
               </p>
               <p>
-                PEP:{' '}
+                <Abbr code="PEP">PEP</Abbr>:{' '}
                 <strong className={lseg.pep.isHit ? 'text-amber-600' : 'text-emerald-600'}>
                   {lseg.pep.isHit ? 'Совпадение' : 'Не выявлено'}
                 </strong>
@@ -354,32 +293,19 @@ export default function ReportBuilderPage() {
         )}
 
         {/* Assessment */}
-        {selected.has('assessment') && assessment && (
+        {selected.has('assessment') && assessment && assessment.flags.length > 0 && (
           <section className="mb-6">
             <h2 className="text-base font-semibold text-neutral-900 mb-3 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-500" />
-              Оценка рисков
+              <AlertTriangle className="w-4 h-4 text-neutral-500" />
+              Выявленные факторы
             </h2>
-            <p className="text-sm text-neutral-700 mb-3">{assessment.summary}</p>
-            {assessment.flags.length > 0 && (
-              <ul className="space-y-1">
-                {assessment.flags.map((f, i) => (
-                  <li key={i} className={`text-sm px-3 py-1.5 rounded ${f.type === 'danger' ? 'bg-red-50 text-red-800' : 'bg-amber-50 text-amber-800'}`}>
-                    {f.message}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {assessment.recommendations.length > 0 && (
-              <div className="mt-3">
-                <p className="text-sm font-medium text-neutral-700 mb-1">Рекомендации:</p>
-                <ul className="space-y-1">
-                  {assessment.recommendations.map((r, i) => (
-                    <li key={i} className="text-sm text-neutral-600">• {r}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+            <ul className="space-y-1">
+              {assessment.flags.map((f, i) => (
+                <li key={i} className="text-sm px-3 py-1.5 rounded bg-neutral-50 text-neutral-700">
+                  {f.message}
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 

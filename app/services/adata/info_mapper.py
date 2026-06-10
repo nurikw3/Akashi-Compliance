@@ -258,6 +258,39 @@ def _parse_courtcase_data(data: dict[str, Any]) -> tuple[
     return active, years, totals, cases_for_ui
 
 
+def _extract_detailed_company_court_cases(info_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Detailed company court cases embedded in the ``/info(/check)`` response.
+
+    Adata returns single court cases (number, parties, documents, history) in the
+    top-level ``court_cases`` list, alongside yearly aggregates inside
+    ``litigation``. Previously only the aggregates were parsed, so a company with
+    detailed cases but no yearly totals was treated as having no court data — the
+    ``courts`` section was marked ``"none"`` and the UI/report showed
+    "Данные отсутствуют" even though the source actually had the cases. Extracting
+    them here keeps the courts section populated and correctly sourced from Adata.
+    """
+    from app.services.adata.client import (
+        _is_detailed_court_case_row,
+        _normalize_individual_court_case,
+    )
+
+    rows = info_data.get("court_cases")
+    if not isinstance(rows, list):
+        return []
+
+    cases: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict) or not _is_detailed_court_case_row(row):
+            continue
+        normalized = _normalize_individual_court_case(row)
+        # For company cases the generic ``sides`` list is the party set; surface it
+        # as defendants when Adata did not provide an explicit defendants array.
+        if not normalized.get("defendants") and normalized.get("participants"):
+            normalized["defendants"] = list(normalized["participants"])
+        cases.append(normalized)
+    return cases
+
+
 def _normalize_bin(item: dict[str, Any]) -> str:
     raw = (
         item.get("bin")
@@ -536,7 +569,12 @@ def map_info_data(
         info_data, raw, lit_data, courts_scope, courts_note
     )
     court_active, court_years, court_totals, court_ui = _parse_courtcase_data(lit_data)
-    has_courts = (court_active is not None and court_active > 0) or bool(court_years)
+    detailed_company_courts = _extract_detailed_company_court_cases(info_data)
+    has_courts = (
+        (court_active is not None and court_active > 0)
+        or bool(court_years)
+        or bool(detailed_company_courts)
+    )
     if has_courts and courts_scope == "company":
         courts_note = None
 
@@ -583,6 +621,7 @@ def map_info_data(
     wrapper["_courts_source"] = section_sources["courts"]
     wrapper["_court_ui_cases"] = court_ui
     wrapper["_court_totals"] = court_totals
+    wrapper["_company_court_cases"] = detailed_company_courts
     wrapper["courts_scope"] = courts_scope
     wrapper["courts_note"] = courts_note
     wrapper["tax_status"] = tax_status

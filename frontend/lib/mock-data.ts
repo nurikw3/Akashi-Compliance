@@ -64,61 +64,29 @@ export function generateMockEnrichment(name: string, iinBin: string): Enrichment
 
 export function generateMockAssessment(enrichment: EnrichmentData): Assessment {
   const flags: Assessment['flags'] = []
-  let riskScore = 0
 
   if (enrichment.taxes.debt > 0) {
-    riskScore += enrichment.taxes.status === 'critical' ? 3 : 1
     flags.push({
-      type: enrichment.taxes.status === 'critical' ? 'danger' : 'warning',
+      type: 'fact',
       message: `Налоговая задолженность: ${enrichment.taxes.debt.toLocaleString()} тг`,
     })
   }
 
   if (enrichment.courts.activeCases > 0) {
-    riskScore += 2
     flags.push({
-      type: 'warning',
+      type: 'fact',
       message: `Активные судебные дела: ${enrichment.courts.activeCases}`,
     })
   }
 
   if (enrichment.sanctions.isOnList) {
-    riskScore += 5
     flags.push({
-      type: 'danger',
+      type: 'fact',
       message: `Компания в санкционном списке: ${enrichment.sanctions.lists.join(', ')}`,
     })
   }
 
-  const riskLevel: Assessment['riskLevel'] = riskScore >= 4 ? 'high' : riskScore >= 2 ? 'medium' : 'low'
-
-  const summaries = {
-    low: 'Компания не имеет существенных рисков. Финансовое состояние стабильное, судебных споров нет, в санкционных списках не числится.',
-    medium:
-      'Выявлены факторы, требующие внимания. Рекомендуется дополнительная проверка перед заключением крупных сделок.',
-    high: 'Высокий уровень риска. Обнаружены критические факторы, требующие детального анализа и согласования с руководством.',
-  }
-
-  const recommendations = {
-    low: ['Стандартная процедура согласования', 'Мониторинг раз в квартал'],
-    medium: [
-      'Запросить дополнительные документы',
-      'Проверить аффилированных лиц',
-      'Установить лимит на сумму контракта',
-    ],
-    high: [
-      'Согласование с комплаенс-комитетом обязательно',
-      'Провести расширенную due diligence',
-      'Рассмотреть отказ от сотрудничества',
-    ],
-  }
-
-  return {
-    riskLevel,
-    summary: summaries[riskLevel],
-    recommendations: recommendations[riskLevel],
-    flags,
-  }
+  return { flags }
 }
 
 // Initial mock cases
@@ -128,7 +96,6 @@ export const initialMockCases: Case[] = [
     name: 'КазСтройИнвест',
     iinBin: '180340021234',
     status: 'ready',
-    riskLevel: 'low',
     createdAt: new Date('2024-01-15'),
     enrichment: generateMockEnrichment('КазСтройИнвест', '180340021234'),
     assessment: undefined,
@@ -140,7 +107,6 @@ export const initialMockCases: Case[] = [
     name: 'ТехноПром',
     iinBin: '150240015678',
     status: 'ready',
-    riskLevel: 'medium',
     createdAt: new Date('2024-01-14'),
     enrichment: generateMockEnrichment('ТехноПром', '150240015678'),
     assessment: undefined,
@@ -152,7 +118,6 @@ export const initialMockCases: Case[] = [
     name: 'АльфаТрейд',
     iinBin: '200140029012',
     status: 'ready',
-    riskLevel: 'high',
     createdAt: new Date('2024-01-13'),
     enrichment: generateMockEnrichment('АльфаТрейд', '200140029012'),
     assessment: undefined,
@@ -164,7 +129,6 @@ export const initialMockCases: Case[] = [
     name: 'МегаЛогистик',
     iinBin: '170540033456',
     status: 'enriching',
-    riskLevel: null,
     createdAt: new Date('2024-01-12'),
     enrichment: undefined,
     assessment: undefined,
@@ -177,6 +141,5 @@ export const initialMockCases: Case[] = [
 initialMockCases.forEach((c) => {
   if (c.enrichment) {
     c.assessment = generateMockAssessment(c.enrichment)
-    c.riskLevel = c.assessment.riskLevel
   }
 })

@@ -87,48 +87,39 @@ def compute_full_report_staleness(enriched: dict[str, Any]) -> dict[str, Any]:
 
 
 def estimate_full_report_context(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Approximate per-section input size for the sectional LLM pipeline."""
+    """Размер ввода для единственного LLM-вызова (резюме).
+
+    Отчёт собирается детерминированно из БД; LLM вызывается только для краткого
+    резюме по блоку «Существенные факты» — и не вызывается, если их нет.
+    """
     if row.get("status") != "ready":
         return None
 
-    from app.services.ai.full_report import (
-        _SECTION_MAX_CHARS,
-        _build_section_context,
-    )
+    from app.services.ai.full_report import _build_material_facts_block
 
     enriched = row.get("enriched_data") or {}
     if not isinstance(enriched, dict) or not enriched.get("enrichment"):
         return None
 
-    sections: dict[str, dict[str, int | str]] = {}
-    total_chars = 0
-    for key in _SECTION_KEYS:
-        cap = _SECTION_MAX_CHARS.get(key, 8000)
-        if key == "summary":
-            ctx = _build_section_context(row, key, section_excerpts={})
-        else:
-            ctx = _build_section_context(row, key)
-        used = min(len(ctx), cap)
-        approx_tokens = used // 4
-        sections[key] = {
-            "chars": used,
-            "capChars": cap,
-            "approxTokens": approx_tokens,
-        }
-        total_chars += used
+    material = _build_material_facts_block(row)
+    has_material = bool(
+        material.strip()
+        and not material.startswith("Существенных фактов не выявлено")
+    )
+    approx_input = (len(material) // 4) if has_material else 0
+    section_calls = 1 if has_material else 0
 
-    approx_input = total_chars // 4
-    model = settings.openai_model
     return {
-        "model": model,
+        "model": settings.openai_model,
         "contextWindowTokens": FULL_REPORT_CONTEXT_WINDOW,
-        "sectionCalls": len(_SECTION_KEYS),
+        "sectionCalls": section_calls,
         "approxTotalInputTokens": approx_input,
         "headroomTokens": max(0, FULL_REPORT_CONTEXT_WINDOW - approx_input),
-        "sections": sections,
+        "sections": {},
         "note": (
-            "Каждая секция — отдельный запрос к LLM; суммарный ввод на один запрос "
-            "значительно меньше окна 128k."
+            "Разделы собираются детерминированно из БД (без LLM). LLM вызывается "
+            "только для краткого резюме по существенным фактам — или не вызывается, "
+            "если их нет."
         ),
     }
 

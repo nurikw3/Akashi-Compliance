@@ -150,7 +150,6 @@ export function CasesProvider({ children }: { children: ReactNode }) {
             name: c.name,
             iinBin: c.iinBin,
             status: 'pending' as const,
-            riskLevel: null,
             createdAt: new Date(),
             documents: [],
             chatHistory: [],
