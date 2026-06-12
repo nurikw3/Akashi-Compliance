@@ -257,7 +257,7 @@ def _build_affiliates(enriched: dict) -> dict:
         detailed.append({
             "name": nm,
             "bin": iin,
-            "kind": "организация (учредитель)" if is_org else "физлицо",
+            "kind": "организация-учредитель" if is_org else "физлицо",
             "enriched": bool(iin and iin in individual_courts),
             "operatingStatus": "",
             "sanctionStatus": _sanction_status(nm),
@@ -278,6 +278,44 @@ def _build_affiliates(enriched: dict) -> dict:
         "screenedCount": len(lseg_ext),
         "sanctioned": sanctioned,
         "detailed": detailed,
+    }
+
+
+def _build_osint(enriched: dict) -> dict | None:
+    """Секция «Информация из открытых источников» из ``enriched_data['osint']``."""
+    osint = enriched.get("osint")
+    status = str(enriched.get("osintStatus") or "")
+    if not isinstance(osint, dict):
+        # ничего не загружено — честно сообщаем статус, без выдумок
+        return {"available": False, "status": status, "byCategory": {}, "sources": [], "findingsCount": 0}
+
+    try:
+        from app.services.osint.prompts import CATEGORIES_RU
+    except Exception:
+        CATEGORIES_RU = {}
+
+    by_category: dict[str, list[dict]] = {}
+    for f in osint.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        cat = CATEGORIES_RU.get(str(f.get("category")), str(f.get("category") or "Прочее"))
+        by_category.setdefault(cat, []).append({
+            "title": str(f.get("title") or "").strip(),
+            "summary": str(f.get("summary") or "").strip(),
+            "subject": str(f.get("subject") or "").strip(),
+            "subjectRole": str(f.get("subjectRole") or "").strip(),
+            "sourceName": str(f.get("sourceName") or "").strip(),
+            "sourceUrl": str(f.get("sourceUrl") or "").strip(),
+            "publishedDate": str(f.get("publishedDate") or "").strip(),
+        })
+
+    return {
+        "available": True,
+        "status": status,
+        "findingsCount": sum(len(v) for v in by_category.values()),
+        "sources": osint.get("sources") or [],
+        "byCategory": by_category,
+        "screenedAt": str(osint.get("screenedAt") or "")[:10],
     }
 
 
@@ -311,4 +349,5 @@ async def build_dossier(enriched: dict[str, Any]) -> dict[str, Any]:
         "sanctions": sanctions,
         "courts": courts,
         "affiliates": affiliates,
+        "osint": _build_osint(enriched),
     }

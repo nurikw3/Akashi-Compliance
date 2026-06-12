@@ -235,6 +235,44 @@ def _render_affiliates(pdf: FPDF, a: dict) -> None:
             _render_affiliate_block(pdf, it)
 
 
+def _render_osint(pdf: FPDF, o: dict) -> None:
+    _section_header(pdf, "ИНФОРМАЦИЯ ИЗ ОТКРЫТЫХ ИСТОЧНИКОВ (ИНТЕРНЕТ)")
+    _p(pdf, "Упоминания из открытых источников в интернете (СМИ, реестры, веб), "
+            "которых нет в Adata и LSEG.", size=8.4, color=_MUTED)
+
+    if not o.get("available"):
+        _p(pdf, "Проверка открытых источников по этому контрагенту не проводилась.",
+           size=8.6, color=_MUTED)
+        return
+
+    by_cat = o.get("byCategory") or {}
+    if not by_cat:
+        srcs = f" Проверено источников: {len(o.get('sources') or [])}." if o.get("sources") else ""
+        _p(pdf, f"Существенных упоминаний в открытых источниках не найдено.{srcs}", size=8.6)
+        return
+
+    _kv(pdf, "Найдено упоминаний:", str(o.get("findingsCount", 0)))
+    if o.get("sources"):
+        _kv(pdf, "Источники:", ", ".join(o["sources"][:12]), size=8.2, value_color=_MUTED)
+
+    for cat, items in by_cat.items():
+        _section_label(pdf, cat)
+        for it in items:
+            head = "● " + (it.get("title") or "упоминание")
+            if it.get("subject"):
+                head += f"  — {it['subject']}"
+            _p(pdf, head, size=8.6, bold=True)
+            if it.get("summary"):
+                _p(pdf, f"   {it['summary']}", size=8.2, h=4.2)
+            src = it.get("sourceName") or ""
+            date = f" · {it['publishedDate']}" if it.get("publishedDate") else ""
+            if it.get("sourceUrl"):
+                _link(pdf, f"   Источник ({src}{date}):", it["sourceUrl"])
+            elif src:
+                _p(pdf, f"   Источник: {src}{date}", size=7.6, color=_MUTED, h=4.0)
+            pdf.ln(0.6)
+
+
 def render_dossier_pdf(dossier: dict[str, Any]) -> bytes:
     pdf = _new()
     pdf.add_page()
@@ -247,5 +285,7 @@ def render_dossier_pdf(dossier: dict[str, Any]) -> bytes:
     if dossier.get("courts"):
         _render_courts(pdf, dossier["courts"])
     _render_affiliates(pdf, dossier.get("affiliates") or {})
+    if dossier.get("osint"):
+        _render_osint(pdf, dossier["osint"])
 
     return bytes(pdf.output())
