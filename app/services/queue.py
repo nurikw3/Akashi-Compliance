@@ -52,6 +52,14 @@ async def _run_deep_dive_inline(case_id: str) -> None:
     await process_case_deep_dive(case_id)
 
 
+async def _run_osint_inline(case_id: str) -> None:
+    import app.services.osint.service as osint_service
+    from app.services.pipeline import osint_screen_case
+
+    if osint_service.is_available():
+        await osint_screen_case(case_id)
+
+
 async def _run_tree_inline(case_id: str) -> None:
     from app.services.affiliate_tree import build_affiliate_tree
 
@@ -112,6 +120,9 @@ async def _run_enrichment_then_followups_inline(case_id: str) -> None:
     row = db.get_case(case_id)
     if row and row.get("status") == "ready":
         await _run_deep_dive_inline(case_id)
+        # OSINT runs after the deep-dive (it dedups against LSEG/Adata) and before
+        # the tree job, so there is only one enriched_data writer at a time.
+        await _run_osint_inline(case_id)
     await _schedule_tree_after_enrichment(case_id, use_taskiq=False)
     await _schedule_ai_conclusion_after_enrichment(case_id, use_taskiq=False)
 

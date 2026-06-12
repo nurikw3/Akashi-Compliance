@@ -72,6 +72,33 @@ export interface LsegData {
   }
 }
 
+export type OsintCategory =
+  | 'sanctions'
+  | 'corruption'
+  | 'reputation'
+  | 'conflict_of_interest'
+
+export interface OsintFinding {
+  subject: string
+  subjectRole: 'company' | 'director' | 'founder'
+  category: OsintCategory
+  title: string
+  summary: string
+  sourceUrl: string
+  sourceName: string
+  publishedDate?: string | null
+  dedupNote?: string
+}
+
+export interface OsintData {
+  screenedAt: string
+  subjects?: { name: string; role: string; anchor?: Record<string, unknown> }[]
+  queriesUsed: string[]
+  sources: string[]
+  findings: OsintFinding[]
+  counts?: { company: number; director: number; founder: number }
+}
+
 export interface AffiliateTreeNode {
   id: string
   name: string
@@ -181,6 +208,14 @@ export interface Case {
   parentCaseId?: string | null
   lseg?: LsegData | null
   lsegExtended?: Record<string, LsegExtendedEntity> | null
+  /** Open-source (OSINT) findings supplementing LSEG/Adata. */
+  osint?: OsintData | null
+  /**
+   * Progress of the async OSINT web-search step. `pending` = case is ready but
+   * OSINT is still running in the background; `ready` = done; `error` = failed.
+   * `undefined` when OSINT is disabled or on legacy cases.
+   */
+  osintStatus?: 'pending' | 'ready' | 'error'
   affiliateProfiles?: Record<string, { courts?: EnrichmentData['courts'] }>
   beneficiary?: Record<string, unknown>[]
   individualCourts?: Record<string, IndividualCourtCase[]>

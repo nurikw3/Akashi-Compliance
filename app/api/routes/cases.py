@@ -33,7 +33,17 @@ from app.services.import_parser import (
     preview_import_rows,
 )
 from app.services.ai.full_report import generate_full_report
-from app.services.pipeline import process_case, rescreen_case_lseg, rescreen_lseg_extended
+from app.services.reports.sanctions_summary import build_readable_summary
+from app.services.reports.sanctions_pdf import render_sanctions_pdf
+from app.services.reports.dossier_summary import build_dossier
+from app.services.reports.dossier_pdf import render_dossier_pdf
+import app.services.osint.service as osint_service
+from app.services.pipeline import (
+    osint_screen_case,
+    process_case,
+    rescreen_case_lseg,
+    rescreen_lseg_extended,
+)
 
 logger = logging.getLogger(__name__)
 from app.services.queue import (
@@ -382,6 +392,73 @@ async def download_case_report(case_id: str) -> Response:
     )
 
 
+@router.get("/cases/{case_id}/sanctions-summary.pdf")
+async def download_sanctions_summary(case_id: str) -> Response:
+    """Compact, plain-Russian sanctions summary (КТО/ЧТО/ГДЕ/КОГДА/ПОЧЕМУ) as PDF.
+
+    Built from ``enriched_data`` LSEG sections. Abbreviations decoded; one short
+    LLM pass rewrites the "за что" into plain Russian (facts-only). No verdicts.
+    """
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    enriched = row.get("enriched_data") or {}
+    if isinstance(enriched, str):
+        import json as _json
+        try:
+            enriched = _json.loads(enriched)
+        except ValueError:
+            enriched = {}
+
+    summary = await build_readable_summary(enriched)
+    try:
+        pdf_bytes = render_sanctions_pdf(summary)
+    except Exception as exc:  # noqa: BLE001 - surface render failures to caller
+        raise HTTPException(status_code=500, detail=f"PDF render failed: {exc}") from exc
+
+    filename = f"sanctions-summary-{case_id[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/cases/{case_id}/dossier.pdf")
+async def download_dossier(case_id: str) -> Response:
+    """Full facts-only counterparty dossier (Adata + LSEG) as a styled PDF.
+
+    Sections: Реквизиты · Налоги · Санкции/PEP · Судебные дела · Аффилиаты.
+    Plain Russian, abbreviations decoded, no verdicts. Same style as the
+    sanctions summary.
+    """
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    enriched = row.get("enriched_data") or {}
+    if isinstance(enriched, str):
+        import json as _json
+        try:
+            enriched = _json.loads(enriched)
+        except ValueError:
+            enriched = {}
+
+    dossier = await build_dossier(enriched)
+    try:
+        pdf_bytes = render_dossier_pdf(dossier)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"PDF render failed: {exc}") from exc
+
+    filename = f"dossier-{case_id[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/cases/{case_id}/chat")
 async def post_chat(case_id: str, payload: ChatRequest) -> dict[str, Any]:
     row = db.get_case(case_id)
@@ -514,6 +591,29 @@ async def rescreen_case_lseg_endpoint(case_id: str, force: bool = True) -> dict[
     return {
         "caseId": case_id,
         "lseg": enriched.get("lseg"),
+    }
+
+
+@router.post("/cases/{case_id}/osint/rescreen")
+async def rescreen_case_osint_endpoint(case_id: str, force: bool = True) -> dict[str, Any]:
+    """Re-run OSINT web-search enrichment for one case."""
+    row = db.get_case(case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if row.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="Кейс должен быть в статусе ready")
+    if not osint_service.is_available():
+        raise HTTPException(status_code=400, detail="OSINT не настроен")
+
+    success = await osint_screen_case(case_id, force=force)
+    if not success:
+        raise HTTPException(status_code=502, detail="OSINT screening failed")
+
+    updated = db.get_case(case_id)
+    enriched = (updated or {}).get("enriched_data") or {}
+    return {
+        "caseId": case_id,
+        "osint": enriched.get("osint"),
     }
 
 

@@ -25,7 +25,7 @@ import {
   Database,
   Sparkles,
 } from 'lucide-react'
-import { downloadCaseReport, fetchAiStatus, rescreenAllWithLseg } from '@/lib/api'
+import { downloadCaseReport, downloadDossier, downloadSanctionsSummary, fetchAiStatus, rescreenAllWithLseg } from '@/lib/api'
 import { useCases } from '@/lib/cases-context'
 import { AffiliatesGraph } from '@/components/affiliates-graph'
 import { LoadingGif } from '@/components/loading-gif'
@@ -35,11 +35,11 @@ import { resolveSectionSource } from '@/lib/source-ref'
 import { Abbr } from '@/components/ui/abbr'
 import { SourceRef } from '@/components/ui/source-ref'
 import { caseDisplayName, formatPersonField } from '@/lib/case-display'
-import type { Case, DataSourceKind, DataSources, LsegData, LsegSanctionHit, LsegExtendedEntity, IndividualCourtCase, VerificationLogEvent } from '@/lib/types'
+import type { Case, DataSourceKind, DataSources, LsegData, LsegSanctionHit, LsegExtendedEntity, IndividualCourtCase, VerificationLogEvent, OsintData, OsintFinding, OsintCategory } from '@/lib/types'
 
-type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'lseg' | 'log'
+type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'lseg' | 'osint' | 'log'
 
-const VALID_TABS: Tab[] = ['data', 'documents', 'assessment', 'chat', 'lseg', 'log']
+const VALID_TABS: Tab[] = ['data', 'documents', 'assessment', 'chat', 'lseg', 'osint', 'log']
 
 function SectionHeading({
   icon: Icon,
@@ -1279,6 +1279,159 @@ function PepHitCard({ hit }: { hit: LsegSanctionHit }) {
   )
 }
 
+// ─── OSINT (open-source intelligence) ─────────────────────────────────────
+
+const OSINT_CATEGORY_META: Record<OsintCategory, { label: string; accent: string }> = {
+  sanctions: { label: 'Санкции', accent: 'text-red-700' },
+  corruption: { label: 'Коррупция', accent: 'text-orange-700' },
+  reputation: { label: 'Репутационные риски', accent: 'text-amber-700' },
+  conflict_of_interest: { label: 'Конфликт интересов', accent: 'text-purple-700' },
+}
+
+const OSINT_ROLE_LABEL: Record<OsintFinding['subjectRole'], string> = {
+  company: 'Компания',
+  director: 'Директор',
+  founder: 'Учредитель',
+}
+
+function OsintFindingCard({ finding }: { finding: OsintFinding }) {
+  return (
+    <div className="p-3 rounded-lg bg-neutral-50 border border-neutral-200">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-200 text-neutral-700">
+              {OSINT_ROLE_LABEL[finding.subjectRole] ?? finding.subjectRole}
+            </span>
+            {finding.subject && (
+              <span className="text-xs text-neutral-500 truncate">{finding.subject}</span>
+            )}
+          </div>
+          <p className="text-sm font-medium text-neutral-900">{finding.title}</p>
+          {finding.summary && (
+            <p className="text-sm text-neutral-600 mt-0.5">{finding.summary}</p>
+          )}
+        </div>
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          {finding.publishedDate && (
+            <span className="text-xs text-neutral-400">{finding.publishedDate}</span>
+          )}
+          <a
+            href={finding.sourceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-blue-600 hover:underline"
+          >
+            {finding.sourceName || 'источник'} ↗
+          </a>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OsintTab({ caseData }: { caseData: Case }) {
+  const osint: OsintData | null | undefined = caseData.osint
+  const status = caseData.osintStatus
+
+  if (!osint && status === 'pending') {
+    return (
+      <div className="rounded-xl bg-white border border-neutral-200">
+        <LoadingGif
+          message="Ищем упоминания в открытых источниках…"
+          size={120}
+          className="py-8"
+        />
+      </div>
+    )
+  }
+
+  if (!osint) {
+    return (
+      <div className="bg-white rounded-xl border border-neutral-200 p-8 text-center">
+        <Globe className="w-10 h-10 text-neutral-300 mx-auto mb-3" />
+        <p className="text-neutral-500 mb-2">
+          {status === 'error'
+            ? 'Поиск по открытым источникам не выполнен'
+            : 'OSINT-поиск не запущен'}
+        </p>
+        <p className="text-sm text-neutral-400">
+          Модуль ищет санкции, коррупцию, репутационные риски и конфликт интересов
+          в открытых источниках — в дополнение к LSEG и A-Data.
+        </p>
+      </div>
+    )
+  }
+
+  const categories: OsintCategory[] = [
+    'sanctions',
+    'corruption',
+    'reputation',
+    'conflict_of_interest',
+  ]
+  const total = osint.findings.length
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl bg-white border border-neutral-200 p-5">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <Globe className="w-5 h-5 text-blue-600" />
+          <h3 className="font-semibold text-neutral-900">Открытые источники (OSINT)</h3>
+          <SourceRef provider="OSINT" />
+        </div>
+        <p className="text-sm text-neutral-500">
+          Дополнение к LSEG и A-Data: только новые упоминания, не найденные в этих
+          источниках.
+          {osint.screenedAt && (
+            <> Проверено {new Date(osint.screenedAt).toLocaleString('ru-RU')}.</>
+          )}
+        </p>
+        {total === 0 && (
+          <p className="text-sm text-emerald-700 mt-2">
+            Дополнительных упоминаний в открытых источниках не обнаружено.
+          </p>
+        )}
+        {osint.sources.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {osint.sources.slice(0, 12).map((s) => (
+              <span
+                key={s}
+                className="text-xs bg-neutral-100 rounded px-1.5 py-0.5 text-neutral-600"
+              >
+                {s}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {categories.map((cat) => {
+        const items = osint.findings.filter((f) => f.category === cat)
+        const meta = OSINT_CATEGORY_META[cat]
+        return (
+          <div key={cat} className="rounded-xl bg-white border border-neutral-200 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className={`font-semibold ${meta.accent}`}>{meta.label}</h3>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-600">
+                {items.length}
+              </span>
+            </div>
+            {items.length === 0 ? (
+              <p className="text-sm text-neutral-400">Не выявлено</p>
+            ) : (
+              <div className="space-y-2">
+                {items.map((f, i) => (
+                  <OsintFindingCard key={`${f.sourceUrl}-${i}`} finding={f} />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: string | null }) {
   const lseg: LsegData | null | undefined = caseData.lseg
   const lsegExtended = caseData.lsegExtended
@@ -1364,6 +1517,19 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
                 <Abbr code="LSEG">LSEG</Abbr> World-Check One
               </h3>
               <SourceRef provider="LSEG" />
+              <button
+                onClick={() =>
+                  downloadSanctionsSummary(
+                    caseData.id,
+                    `sanctions-summary-${caseData.id.slice(0, 8)}.pdf`,
+                  ).catch((e) => alert(e instanceof Error ? e.message : 'Ошибка выгрузки'))
+                }
+                className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-neutral-200 hover:bg-neutral-50 transition-colors"
+                title="Скачать санкционное резюме (КТО/ЧТО/ГДЕ/КОГДА/ПОЧЕМУ) в PDF"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Санкционное резюме (PDF)
+              </button>
             </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
@@ -1938,6 +2104,9 @@ export function CaseDetail({ caseId }: { caseId: string }) {
   const tabs: { id: Tab; label: string; icon: typeof Building2 }[] = [
     { id: 'data', label: 'Граф связей', icon: Network },
     { id: 'lseg', label: 'LSEG / Санкции', icon: ShieldCheck },
+    ...(caseData.osint || caseData.osintStatus
+      ? [{ id: 'osint' as Tab, label: 'OSINT', icon: Globe }]
+      : []),
     { id: 'log', label: 'Лог проверки', icon: ListChecks },
     { id: 'documents', label: 'Документы', icon: FileText },
     // { id: 'assessment', label: 'Заключение ИИ', icon: AlertTriangle },
@@ -2028,6 +2197,18 @@ export function CaseDetail({ caseId }: { caseId: string }) {
               )}
               PDF Adata
             </button>
+            <button
+              type="button"
+              onClick={() =>
+                downloadDossier(caseData.id, `dossier-${caseData.iinBin || caseData.id.slice(0, 8)}.pdf`)
+                  .catch((e) => alert(e instanceof Error ? e.message : 'Ошибка выгрузки досье'))
+              }
+              className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+              title="Полное досье (реквизиты, налоги, санкции, суды, аффилиаты) в PDF"
+            >
+              <FileText className="w-4 h-4" />
+              Полное досье (PDF)
+            </button>
           </div>
         </div>
       </div>
@@ -2058,6 +2239,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
         <DataTab caseData={caseData} onRefresh={() => refreshCase(caseId)} />
       )}
       {activeTab === 'lseg' && <LsegTab caseData={caseData} focusEntity={focusEntity} />}
+      {activeTab === 'osint' && <OsintTab caseData={caseData} />}
       {activeTab === 'log' && <VerificationLogTab caseData={caseData} />}
       {activeTab === 'documents' && <DocumentsTab caseData={caseData} />}
       {activeTab === 'assessment' && <AssessmentTab caseData={caseData} />}

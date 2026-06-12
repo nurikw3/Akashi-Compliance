@@ -19,6 +19,8 @@ async def lifespan(_app: FastAPI):
     db.init_db()
     registry.register(AdataProvider())
     registry.register(KompraProvider())
+    from app.services.lseg.provider_registry import load_provider_registry
+    await load_provider_registry()
     yield
 
 

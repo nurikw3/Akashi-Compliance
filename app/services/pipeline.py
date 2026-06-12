@@ -28,6 +28,7 @@ from app.services.enrichment.mapper import (
 from app.services.enrichment.service import EnrichmentService
 import app.services.lseg.service as lseg_service
 from app.services.lseg.mapper import build_lseg_extended_entities
+import app.services.osint.service as osint_service
 from app.services.ai.court_analyzer import analyze_court_cases
 from app.services.verification_log import add_event_to_enriched
 
@@ -315,8 +316,21 @@ def _collect_nonresident_nodes_from_tree(tree_root: dict | None) -> list[dict]:
     return targets
 
 
+def _country_secondary_fields(country_code: str) -> list[dict] | None:
+    """Return [SFCT_6=country] secondary fields for a known ISO alpha-3 country code."""
+    code = (country_code or "").strip().upper()
+    if len(code) == 3 and code.isalpha() and code != "KAZ":
+        return [{"typeId": "SFCT_6", "value": code}]
+    return None
+
+
 def _build_lseg_extended_targets(enriched: dict) -> list[dict]:
-    """Collect non-resident LSEG targets from enrichment, Adata extras, and affiliate tree."""
+    """Collect non-resident LSEG targets from enrichment, Adata extras, and affiliate tree.
+
+    Each target dict: ``{name, entity_type, key, secondary_fields?}``.
+    ``secondary_fields`` is set when a reliable country/identifier is available so
+    WC1 can filter false positives (e.g. REGISTERED_COUNTRY=RUS for Russian founders).
+    """
     lseg_targets: list[dict] = []
     enrichment = enriched.get("enrichment") or {}
     beneficiary = enriched.get("beneficiary")
@@ -334,9 +348,17 @@ def _build_lseg_extended_targets(enriched: dict) -> list[dict]:
                     else "ORGANISATION"
                 )
                 biin = str(item.get("biin") or item.get("iin") or "")
-                lseg_targets.append(
-                    {"name": name, "entity_type": etype, "key": biin or name[:40]}
-                )
+                # If entity has a valid KZ BIN, pass it as secondaryField for precision filtering
+                # (counterparty_type="company" is not "KZ" but the entity is still KZ-registered)
+                if biin and _KZ_BIN_RE.match(biin):
+                    sf: list[dict] | None = lseg_service._kz_org_fields(biin)
+                else:
+                    country = str(item.get("country_code") or item.get("country") or ctype or "")
+                    sf = _country_secondary_fields(country)
+                target: dict = {"name": name, "entity_type": etype, "key": biin or name[:40]}
+                if sf:
+                    target["secondary_fields"] = sf
+                lseg_targets.append(target)
 
     for item in ((non_residents if isinstance(non_residents, dict) else {}).get("data") or []):
         name = str(item.get("name") or item.get("short_name") or "")
@@ -348,7 +370,12 @@ def _build_lseg_extended_targets(enriched: dict) -> list[dict]:
                 else "ORGANISATION"
             )
             key = str(item.get("biin") or item.get("iin") or name[:40])
-            lseg_targets.append({"name": name, "entity_type": etype, "key": key})
+            country = str(item.get("country_code") or item.get("country") or "")
+            sf = _country_secondary_fields(country)
+            target = {"name": name, "entity_type": etype, "key": key}
+            if sf:
+                target["secondary_fields"] = sf
+            lseg_targets.append(target)
 
     affiliates_data = enrichment.get("affiliates") or {}
     for ind in affiliates_data.get("individuals") or []:
@@ -362,9 +389,12 @@ def _build_lseg_extended_targets(enriched: dict) -> list[dict]:
         bin_val = str(comp.get("iinBin") or comp.get("bin") or "").strip()
         name = str(comp.get("name") or "").strip()
         if name and (not bin_val or not _KZ_BIN_RE.match(bin_val)):
-            lseg_targets.append(
-                {"name": name, "entity_type": "ORGANISATION", "key": bin_val or name[:60]}
-            )
+            target = {"name": name, "entity_type": "ORGANISATION", "key": bin_val or name[:60]}
+            country = str(comp.get("country_code") or comp.get("country") or "")
+            sf = _country_secondary_fields(country)
+            if sf:
+                target["secondary_fields"] = sf
+            lseg_targets.append(target)
 
     affiliate_tree_root = (enriched.get("affiliateTree") or {}).get("root")
     lseg_targets.extend(_collect_nonresident_nodes_from_tree(affiliate_tree_root))
@@ -432,6 +462,9 @@ async def process_case(case_id: str) -> None:
 
         courts = enrichment.get("courts") or {}
         director = enrichment.get("companyInfo", {}).get("director")
+        director_iin_val = _normalize_iin(
+            enrichment.get("companyInfo", {}).get("director_iin") or ""
+        ) or ""
         main_bin = _normalize_iin(iin) or iin
 
         async def _maybe_analyze_courts() -> list | None:
@@ -453,7 +486,7 @@ async def process_case(case_id: str) -> None:
             company_court_cases,
         ) = await asyncio.gather(
             _maybe_analyze_courts(),
-            lseg_service.screen(company_name=screen_name, director=director, iin=iin, case_id=case_id),
+            lseg_service.screen(company_name=screen_name, director=director, iin=iin, director_iin=director_iin_val, case_id=case_id),
             fetch_trustworthy_plus(iin, case_id=case_id),
             fetch_beneficiary(iin, case_id=case_id),
             fetch_non_resident_affiliations(iin, case_id=case_id),
@@ -545,6 +578,7 @@ async def process_case(case_id: str) -> None:
                 "relationExtended": relation_extended if isinstance(relation_extended, dict) else {},
                 "companyCourtCases": company_court_cases,
                 "deepDiveStatus": "pending",
+                **({"osintStatus": "pending"} if osint_service.is_available() else {}),
             },
             sources=sources,
             conclusion="",
@@ -797,6 +831,9 @@ async def rescreen_case_lseg(case_id: str, *, force: bool = False) -> bool:
     iin = row["iin"]
     screen_name = resolve_company_display_name(company_name, iin, enrichment)
     director = enrichment.get("companyInfo", {}).get("director")
+    director_iin_val = _normalize_iin(
+        enrichment.get("companyInfo", {}).get("director_iin") or ""
+    ) or ""
 
     if force:
         await lseg_service.invalidate_screening_cache(screen_name, director)
@@ -807,6 +844,7 @@ async def rescreen_case_lseg(case_id: str, *, force: bool = False) -> bool:
         company_name=screen_name,
         director=director,
         iin=iin,
+        director_iin=director_iin_val,
         case_id=case_id,
     )
     if lseg_data is None:
@@ -820,6 +858,16 @@ async def rescreen_case_lseg(case_id: str, *, force: bool = False) -> bool:
     )
     logger.info("LSEG re-screen done for %s (force=%s)", case_id, force)
     return True
+
+
+async def osint_screen_case(case_id: str, *, force: bool = False) -> bool:
+    """Run OSINT web-search enrichment for an already-enriched case.
+
+    Thin delegate to :mod:`app.services.osint.service`; kept here so the worker
+    and queue layers import OSINT through the same module as the rest of the
+    pipeline. Writes ``enriched_data["osint"]`` while preserving other keys.
+    """
+    return await osint_service.osint_screen(case_id, force=force)
 
 
 async def rescreen_lseg_extended(case_id: str) -> dict:

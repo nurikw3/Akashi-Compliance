@@ -13,7 +13,12 @@ from app.services.ai.jobs import chat_reply_for_case, generate_conclusion_for_ca
 from app.services.enrichment.providers.adata import AdataProvider
 from app.services.enrichment.providers.kompra import KompraProvider
 from app.services.enrichment.registry import registry
-from app.services.pipeline import process_case, process_case_deep_dive
+import app.services.osint.service as osint_service
+from app.services.pipeline import (
+    osint_screen_case,
+    process_case,
+    process_case_deep_dive,
+)
 from app.workers.broker import broker
 from app.workers.heartbeat import refresh_worker_heartbeat
 
@@ -47,6 +52,8 @@ async def _heartbeat_loop() -> None:
 async def worker_startup(_state: object) -> None:
     global _heartbeat_task
     _ensure_worker_context()
+    from app.services.lseg.provider_registry import load_provider_registry
+    await load_provider_registry()
     await refresh_worker_heartbeat()
     _heartbeat_task = asyncio.create_task(_heartbeat_loop())
     logger.info("TaskIQ worker started (providers + DB ready)")
@@ -84,6 +91,11 @@ async def case_deep_dive_task(case_id: str) -> dict[str, str]:
     _ensure_worker_context()
     logger.info("case_deep_dive start: %s", case_id)
     await process_case_deep_dive(case_id)
+    # OSINT supplements Adata/LSEG and dedups against them, so it runs after the
+    # deep-dive. Awaited (not queued) to keep a single enriched_data writer at a
+    # time — the tree job below also writes enriched_data.
+    if osint_service.is_available():
+        await osint_screen_case(case_id)
     await affiliate_tree_task.kiq(case_id)
     await ai_conclusion_task.kiq(case_id)
     logger.info("case_deep_dive queued affiliate_tree + ai_conclusion for %s", case_id)

@@ -381,30 +381,21 @@ function SectionCard({
   const config = getSectionConfig(section.heading)
 
   return (
-    <div
-      className={cn(
-        'rounded-xl border border-neutral-200 bg-white overflow-hidden shadow-sm border-l-4',
-        config.borderColor,
-      )}
-    >
+    <div className="rounded-xl border border-neutral-200 bg-white overflow-hidden shadow-sm">
       {section.heading && (
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={!collapsed}
-          className={cn(
-            'w-full flex items-center gap-2.5 px-5 py-3 text-left transition-colors hover:brightness-[0.98]',
-            config.headerBg,
-            !collapsed && 'border-b border-neutral-100',
-          )}
+          className="w-full flex items-center gap-2.5 px-5 py-3 text-left transition-colors bg-[#263246] hover:bg-[#2e3c54]"
         >
-          <span className={cn('p-1.5 rounded-md', config.iconBg)}>
+          <span className="p-1.5 rounded-md bg-white/15 text-white">
             {config.icon}
           </span>
-          <h2 className="text-[14.5px] font-semibold text-neutral-900 flex-1">{section.heading}</h2>
+          <h2 className="text-[14.5px] font-semibold text-white flex-1 uppercase tracking-wide">{section.heading}</h2>
           <ChevronDown
             className={cn(
-              'w-4 h-4 text-neutral-400 transition-transform shrink-0',
+              'w-4 h-4 text-white/70 transition-transform shrink-0',
               collapsed && '-rotate-90',
             )}
           />

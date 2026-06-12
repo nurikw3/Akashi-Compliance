@@ -103,6 +103,23 @@ class Settings:
     lseg_client_id: str = os.getenv("LSEG_CLIENT_ID", "")
     lseg_client_secret: str = os.getenv("LSEG_CLIENT_SECRET", "")
     lseg_group_id: str = os.getenv("LSEG_GROUP_ID", "")
+
+    # OSINT web-search enrichment (supplements Adata/LSEG; off unless configured).
+    osint_enabled: bool = os.getenv("OSINT_ENABLED", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    osint_search_provider: str = os.getenv("OSINT_SEARCH_PROVIDER", "tavily")
+    osint_search_api_key: str = os.getenv(
+        "OSINT_SEARCH_API_KEY", os.getenv("TAVILY_API_KEY", "")
+    )
+    osint_search_base_url: str = os.getenv("OSINT_SEARCH_BASE_URL", "")
+    osint_timeout_seconds: float = float(os.getenv("OSINT_TIMEOUT_SECONDS", "20"))
+    osint_max_results: int = int(os.getenv("OSINT_MAX_RESULTS", "5"))
+    # LLM for OSINT's two passes. Empty → falls back to OPENAI_MODEL, so OSINT can
+    # use a stronger model (e.g. gpt-4o) without raising cost for courts/reports.
+    osint_model: str = os.getenv("OSINT_MODEL", "")
     suppress_enrichment_errors: bool = os.getenv(
         "SUPPRESS_ENRICHMENT_ERRORS",
         os.getenv("USE_STUB_ON_API_FAILURE", "false"),

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.lseg.provider_registry import get_provider_name
 from app.services.lseg.screening import filter_bin_query_false_positive_hits
 
 
@@ -34,23 +35,14 @@ def _source_codes_indicate_sanction(sources: list[str]) -> bool:
 
 
 def _decode_sources(sources: list[str]) -> list[str]:
-    """Map raw LSEG source codes to human-readable sanction list names."""
-    _MAP = {
-        "RSSRE-WC": "Russia Specially Designated Related Entities",
-        "RSSRE-50-WC": "Russia Specially Designated Related Entities (50% Rule)",
-        "INSAE-50-OFAC-WC": "OFAC (US Treasury) – 50% Rule",
-        "INSAE-50-UKHMT-WC": "UK HM Treasury – 50% Rule",
-        "INSAE-50-WC": "Interdicted & Sanctioned Associated Entities (50% Rule)",
-        "INSAE-WC": "Interdicted & Sanctioned Associated Entities",
-        "RUPTRE-WC": "Russia Restrictive Measures (EU)",
-        "BIS-WC": "US Bureau of Industry and Security (Export Controls)",
-        "SIE": "Special Interest Entities",
-    }
+    """Map raw LSEG source codes to human-readable sanction list names.
+
+    Uses the dynamic provider registry (loaded from /references/providers at
+    startup) with a hardcoded fallback for common codes.
+    """
     decoded: list[str] = []
     for src in sources:
-        # strip prefix "b_trwc_" or "b_trwc_M:"
-        key = src.replace("b_trwc_", "").replace("b_tr_", "")
-        label = _MAP.get(key, key)
+        label = get_provider_name(src)
         if label not in decoded:
             decoded.append(label)
     return decoded
@@ -90,43 +82,288 @@ def _is_material_watchlist_hit(hit: dict[str, Any]) -> bool:
     return any(frag in cats_text for frag in _HIGH_RISK_CATEGORY_FRAGMENTS)
 
 
+def _extract_locations(loc_list: list) -> dict[str, Any]:
+    """Extract structured location data from result.locations[].
+
+    Returns:
+        countries: flat list of ISO codes (for backwards compat)
+        countryNames: flat list of country names
+        nationalities: list of nationality country names
+        locationDetails: structured [{"type": ..., "country": ..., "region": ...}]
+    """
+    countries: list[str] = []
+    country_names: list[str] = []
+    nationalities: list[str] = []
+    location_details: list[dict] = []
+
+    for loc in loc_list or []:
+        country = loc.get("country") or {}
+        code = country.get("code", "")
+        cname = country.get("name", "")
+        loc_type = loc.get("type", "")
+        region = next(
+            (d.get("value") for d in (loc.get("details") or []) if d.get("type") == "REGION"),
+            None,
+        )
+
+        location_details.append({
+            "type": loc_type,
+            "countryCode": code,
+            "countryName": cname,
+            "region": region,
+        })
+
+        if code and code not in countries:
+            countries.append(code)
+        if cname and cname not in country_names:
+            country_names.append(cname)
+        if loc_type == "NATIONALITY" and cname and cname not in nationalities:
+            nationalities.append(cname)
+
+    return {
+        "countries": countries,
+        "countryNames": country_names,
+        "nationalities": nationalities,
+        "locationDetails": location_details,
+    }
+
+
+def _extract_dates(dates_obj: dict | list | None) -> dict[str, str]:
+    """Extract entity dates (DOB, incorporation, etc.) as {type: value}.
+
+    WC1 /results returns ``dates`` as a flat list; full profiles use
+    ``{"dateDetails": [...]}`` — handle both.
+    """
+    if isinstance(dates_obj, list):
+        return {d.get("type", "?"): d.get("value", "") for d in dates_obj if d.get("value")}
+    if not isinstance(dates_obj, dict):
+        return {}
+    return {
+        d.get("type", "?"): d.get("value", "")
+        for d in (dates_obj.get("dateDetails") or [])
+        if d.get("value")
+    }
+
+
+def _extract_record_dates(rdates: list | None) -> dict[str, str]:
+    """Extract WC record lifecycle dates (when added/updated in World-Check)."""
+    if not isinstance(rdates, list):
+        return {}
+    return {d.get("type", "?"): d.get("value", "") for d in rdates if d.get("value")}
+
+
+def _extract_identifications(ids_obj: dict | list | None) -> list[dict]:
+    """Extract sanction/document IDs (OFAC SDN#, UN resolution#, passport, etc.).
+
+    WC1 /results may return ``identifications`` as a flat list; full profiles use
+    ``{"identificationDetails": [...]}`` — handle both.
+    """
+    if isinstance(ids_obj, list):
+        details = ids_obj
+    elif isinstance(ids_obj, dict):
+        details = ids_obj.get("identificationDetails") or []
+    else:
+        return []
+    out = []
+    for d in details:
+        issuing = d.get("issuingCountry") or {}
+        out.append({
+            "type": d.get("type"),
+            "name": d.get("name"),
+            "value": d.get("value"),
+            "issuingCountry": issuing.get("name") or issuing.get("code"),
+            "issueDate": d.get("issueDate"),
+            "expiryDate": d.get("expiryDate"),
+        })
+    return out
+
+
+def _extract_further_information(fi_obj: dict | None) -> list[dict]:
+    """Extract analyst narrative blocks from furtherInformation."""
+    if not isinstance(fi_obj, dict):
+        return []
+    return [
+        {
+            "title": d.get("title"),
+            "type": d.get("detailType"),
+            "text": d.get("text"),
+        }
+        for d in (fi_obj.get("details") or [])
+        if d.get("text")
+    ]
+
+
+def _extract_source_reference_links(srl_obj: dict | None) -> list[dict]:
+    """Extract primary source document URLs (official government registers, UN, OFAC, etc.)."""
+    if not isinstance(srl_obj, dict):
+        return []
+    return [
+        {"title": lnk.get("title"), "url": lnk.get("url")}
+        for lnk in (srl_obj.get("referenceLinks") or srl_obj.get("sourceReferenceLinkDetails") or [])
+        if lnk.get("url")
+    ]
+
+
+def _secondary_field_result(result: dict[str, Any]) -> str:
+    """Return the highest-confidence secondaryField outcome for a result.
+
+    Priority: NOT_MATCHED > UNKNOWN > MATCHED (worst is most actionable).
+    Returns "NONE" when no secondaryFieldResults are present.
+    """
+    sf_results = result.get("secondaryFieldResults") or []
+    outcomes = {r.get("fieldResult", "") for r in sf_results if isinstance(r, dict)}
+    if "NOT_MATCHED" in outcomes:
+        return "NOT_MATCHED"
+    if "MATCHED" in outcomes:
+        return "MATCHED"
+    if "UNKNOWN" in outcomes:
+        return "UNKNOWN"
+    return "NONE"
+
+
+def _extract_secondary_field_results(sf_list: list | None) -> list[dict]:
+    """Store raw secondaryFieldResults so UI can answer 'is IIN/BIN confirmed?'"""
+    if not isinstance(sf_list, list):
+        return []
+    return [
+        {
+            "typeId": r.get("typeId"),
+            "submittedValue": r.get("submittedValue"),
+            "matchedValue": r.get("matchedValue"),
+            "fieldResult": r.get("fieldResult"),  # MATCHED / NOT_MATCHED / UNKNOWN
+        }
+        for r in sf_list
+        if isinstance(r, dict)
+    ]
+
+
+def _extract_matched_terms(terms: list | None) -> list[dict]:
+    """Store matchedTerms so UI can answer 'which name/term triggered the match'."""
+    if not isinstance(terms, list):
+        return []
+    return [
+        {
+            "term": t.get("term"),
+            "type": t.get("type"),        # PRIMARY / AKA / NATIVE_AKA / etc.
+            "submittedTerm": t.get("submittedTerm"),
+        }
+        for t in terms
+        if isinstance(t, dict)
+    ]
+
+
+def _extract_sanctioning_countries(sanction_lists: list[str]) -> list[str]:
+    """Extract the sanctioning jurisdictions from decoded sanction list names.
+
+    E.g. "UK - UKSANC-AF - UK Sanctions List - Asset Freeze" → "United Kingdom"
+    Parses the first token of each entry (before first " - ") and maps to a
+    full country name when possible.
+    """
+    _ABBR_MAP = {
+        "USA": "United States",
+        "US": "United States",
+        "UK": "United Kingdom",
+        "EU": "European Union",
+        "UN": "United Nations",
+        "INTERNATIONAL": "International",
+        "CANADA": "Canada",
+        "AUSTRALIA": "Australia",
+        "ISRAEL": "Israel",
+        "GERMANY": "Germany",
+        "FRANCE": "France",
+        "SWITZERLAND": "Switzerland",
+        "LUXEMBOURG": "Luxembourg",
+        "AUSTRIA": "Austria",
+        "SPAIN": "Spain",
+        "MALTA": "Malta",
+        "MONACO": "Monaco",
+        "GUERNSEY": "Guernsey",
+        "JERSEY": "Jersey",
+        "ISLE OF MAN": "Isle of Man",
+        "CAYMAN ISLANDS": "Cayman Islands",
+        "SINGAPORE": "Singapore",
+        "JAPAN": "Japan",
+        "KOREA, SOUTH": "South Korea",
+        "TAIWAN": "Taiwan",
+        "INDIA": "India",
+        "SRI LANKA": "Sri Lanka",
+        "NEW ZEALAND": "New Zealand",
+        "SOUTH AFRICA": "South Africa",
+        "UKRAINE": "Ukraine",
+        "UZBEKISTAN": "Uzbekistan",
+        "KYRGYZSTAN": "Kyrgyzstan",
+        "AZERBAIJAN": "Azerbaijan",
+        "TURKIYE": "Türkiye",
+        "INDONESIA": "Indonesia",
+        "LIECHTENSTEIN": "Liechtenstein",
+        "RUSSIAN FEDERATION": "Russia",
+    }
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in sanction_lists:
+        # Only process entries with the canonical format "COUNTRY - CODE - Description"
+        # Entries without " - " are source categories (e.g. "State Invested Enterprise"),
+        # not sanctioning jurisdictions, so skip them.
+        if " - " not in entry:
+            continue
+        prefix = entry.split(" - ")[0].strip().upper()
+        if not prefix:
+            continue
+        label = _ABBR_MAP.get(prefix) or prefix.title()
+        if label and label not in seen:
+            seen.add(label)
+            result.append(label)
+    return result
+
+
+def _compute_verification_status(
+    match_strength: str,
+    sf_result: str,
+    is_sanction: bool,
+) -> str:
+    """Compute a human-readable verification status for a hit.
+
+    CONFIRMED   — EXACT/STRONG match OR secondary fields confirmed (MATCHED)
+    UNVERIFIED  — MEDIUM/WEAK match with UNKNOWN or no secondary field data
+    FALSE_POSITIVE — auto-resolved by WC1 as FALSE (excluded before this point)
+    """
+    strength = (match_strength or "").upper()
+    if sf_result == "MATCHED" or strength in ("EXACT", "STRONG"):
+        return "CONFIRMED"
+    if sf_result == "NOT_MATCHED":
+        return "FALSE_POSITIVE"
+    return "UNVERIFIED"
+
+
 def _extract_hits(results_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse /cases/{id}/results or screen_sync response into a flat list of enriched hits."""
+    """Parse /cases/{id}/results into a flat list of enriched hits.
+
+    Each hit includes full WHO/WHAT/WHERE/WHEN fields:
+      КТО  — primaryName, aliases, pepStatus, recordType
+      ЧТО  — isSanction, sanctionLists, identifications, furtherInformation
+      ГДЕ  — locationDetails (typed: CITIZENSHIP, REGISTERED_IN, etc.)
+      КОГДА — dates (DOB/incorporation), recordDates (WC publish dates)
+      ОТКУДА — sourceReferenceLinks (primary source document URLs)
+
+    Hits auto-resolved as FALSE by WC1 (secondaryField NOT_MATCHED → country
+    mismatch) are silently excluded — they are confirmed non-matches.
+    """
     hits: list[dict[str, Any]] = []
     for result in results_payload.get("results", []):
+        # Exclude hits that WC1 auto-resolved as FALSE (e.g. registered country mismatch)
+        resolution = result.get("resolution") or {}
+        if resolution.get("resolutionStatusType") == "FALSE":
+            continue
         record = result.get("worldCheckRecord") or result.get("matchedRecord") or {}
 
-        # Categories: prefer worldCheckRecord.categories, fall back to sourceCategories
         categories: list[str] = record.get("categories") or []
         source_categories: list[str] = result.get("sourceCategories") or []
         effective_categories = categories if categories else source_categories
 
-        # Raw source codes (e.g. "b_trwc_INSAE-50-OFAC-WC")
         raw_sources: list[str] = result.get("sources") or []
-
-        # isSanction: check effective_categories first; fall back to raw source codes
         is_sanction = bool(_SANCTIONS_CATEGORIES & set(effective_categories)) or _source_codes_indicate_sanction(raw_sources)
         is_pep = bool(_PEP_CATEGORIES & set(effective_categories))
-
-        # sanctionLists — human-readable list names decoded from raw sources
         sanction_lists: list[str] = _decode_sources(raw_sources) if raw_sources else list(dict.fromkeys(source_categories))
-
-        # locations: split into country codes/names and nationalities
-        countries: list[str] = []
-        country_names: list[str] = []
-        nationalities: list[str] = []
-        for loc in result.get("locations") or []:
-            country = loc.get("country") or {}
-            code = country.get("code", "")
-            name = country.get("name", "")
-            loc_type = loc.get("type", "")
-            if loc_type in ("LOCATION", "NATIONALITY") and code:
-                if code not in countries:
-                    countries.append(code)
-                if name and name not in country_names:
-                    country_names.append(name)
-            if loc_type == "NATIONALITY" and name and name not in nationalities:
-                nationalities.append(name)
 
         # aliases — all name values from result.names[].details[].value
         aliases: list[str] = []
@@ -136,31 +373,56 @@ def _extract_hits(results_payload: dict[str, Any]) -> list[dict[str, Any]]:
                 if value and value not in aliases:
                     aliases.append(value)
 
+        loc_data = _extract_locations(result.get("locations") or [])
+        sf_result_str = _secondary_field_result(result)
+        match_strength = result.get("matchStrength", "")
+
         hits.append(
             {
+                # ── match metadata
                 "resultId": result.get("resultId", ""),
+                "referenceId": result.get("referenceId", ""),
                 "primaryName": _primary_name_from_result(result, record),
-                "matchStrength": result.get("matchStrength", ""),
+                "matchStrength": match_strength,
                 "matchScore": result.get("matchScore"),
                 "submittedName": result.get("submittedTerm", ""),
+                "recordType": result.get("recordType", ""),
+                # ── verification (key compliance question: «наш контрагент или однофамилец?»)
+                "sfResult": sf_result_str,
+                "verificationStatus": _compute_verification_status(match_strength, sf_result_str, is_sanction),
+                "matchedTerms": _extract_matched_terms(result.get("matchedTerms")),
+                "secondaryFieldResults": _extract_secondary_field_results(result.get("secondaryFieldResults")),
+                # ── КТО
+                "pepStatus": result.get("pepStatus", ""),
                 "isSanction": is_sanction,
                 "isPep": is_pep,
                 "isMaterialMatch": _is_material_watchlist_hit(
                     {
                         "isSanction": is_sanction,
                         "matchScore": result.get("matchScore"),
-                        "matchStrength": result.get("matchStrength", ""),
+                        "matchStrength": match_strength,
                         "categories": effective_categories,
                     }
                 ),
-                "sanctionLists": sanction_lists,
-                "countries": countries,
-                "countryNames": country_names,
-                "nationalities": nationalities,
-                "categories": effective_categories,
                 "aliases": aliases,
+                # ── ЧТО (санкции + страны-инициаторы)
+                "sanctionLists": sanction_lists,
+                "sanctioningCountries": _extract_sanctioning_countries(sanction_lists),
+                "categories": effective_categories,
                 "sourceCategories": source_categories,
                 "rawSources": raw_sources,
+                "identifications": _extract_identifications(result.get("identifications")),
+                "furtherInformation": _extract_further_information(result.get("furtherInformation")),
+                # ── ГДЕ
+                "countries": loc_data["countries"],
+                "countryNames": loc_data["countryNames"],
+                "nationalities": loc_data["nationalities"],
+                "locationDetails": loc_data["locationDetails"],
+                # ── КОГДА
+                "dates": _extract_dates(result.get("dates")),
+                "recordDates": _extract_record_dates(result.get("recordDates")),
+                # ── ОТКУДА (первоисточники)
+                "sourceReferenceLinks": _extract_source_reference_links(result.get("sourceReferenceLinks")),
             }
         )
     return hits

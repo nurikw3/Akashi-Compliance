@@ -105,6 +105,8 @@ def case_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "parentCaseId": row.get("parent_case_id"),
         "lseg": enriched.get("lseg"),
         "lsegExtended": enriched.get("lsegExtended"),
+        "osint": enriched.get("osint"),
+        "osintStatus": enriched.get("osintStatus"),
         "directorProfile": enriched.get("directorProfile"),
         "affiliateProfiles": enriched.get("affiliateProfiles"),
         "individualCourts": enriched.get("individualCourts"),

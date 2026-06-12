@@ -8,8 +8,8 @@ services:
       POSTGRES_USER: akashicompliance
       POSTGRES_PASSWORD: akashicompliance
       POSTGRES_DB: akashicompliance
-    # No host port — avoids conflict with other Postgres on the server.
-    # api/worker connect via docker network: postgres:5432
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,7 +21,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # No host port — avoids conflict with other Redis on the server.
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

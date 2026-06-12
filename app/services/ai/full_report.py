@@ -129,6 +129,7 @@ def _list_data_sources(enriched: dict[str, Any]) -> list[str]:
         ("enrichment", "Adata (enrichment)"),
         ("lseg", "LSEG World-Check One (компания и директор)"),
         ("lsegExtended", "LSEG World-Check One (аффилиаты/нерезиденты)"),
+        ("osint", "OSINT (открытые источники: санкции/коррупция/репутация/конфликт интересов)"),
         ("affiliateTree", "Дерево аффилиатов"),
         ("trustworthyPlus", "Adata Trustworthy-Plus"),
         ("beneficiary", "Adata Beneficiary (UBO)"),
@@ -571,6 +572,34 @@ def _format_company_dossier_from_affiliate(aff: dict) -> str:
     )
 
 
+_OSINT_CATEGORY_RU = {
+    "sanctions": "Санкции",
+    "corruption": "Коррупция",
+    "reputation": "Репутационные риски",
+    "conflict_of_interest": "Конфликт интересов",
+}
+
+
+def _build_osint_fact_lines(enriched: dict[str, Any]) -> list[str]:
+    """OSINT findings as fact lines, tagged ``[OSINT]`` like ``[Adata]``/``[LSEG]``."""
+    osint = enriched.get("osint")
+    if not isinstance(osint, dict):
+        return []
+    lines: list[str] = []
+    for f in osint.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        subject = str(f.get("subject") or "").strip()
+        category = _OSINT_CATEGORY_RU.get(str(f.get("category") or ""), "")
+        title = str(f.get("title") or "").strip()
+        url = str(f.get("sourceUrl") or "").strip() or None
+        head = " · ".join(p for p in (subject, category) if p)
+        text = f"{head} — {title}" if head else title
+        if text:
+            lines.append(_fact("OSINT", text, url=url))
+    return lines
+
+
 def _build_sanctions_facts_block(row: dict[str, Any]) -> str:
     """Факты санкционного скрининга (код) — показываются в отчёте."""
     enriched = row.get("enriched_data") or {}
@@ -590,6 +619,13 @@ def _build_sanctions_facts_block(row: dict[str, Any]) -> str:
         )
     else:
         lines.append("\n- Adata санкции/риски: нет")
+
+    osint_lines = _build_osint_fact_lines(enriched)
+    if osint_lines:
+        lines.append(
+            "\n**Открытые источники (OSINT) — дополнительно к LSEG/Adata:**"
+        )
+        lines.extend(osint_lines)
 
     return "\n".join(lines)
 
@@ -1794,14 +1830,18 @@ def _build_coverage_map(row: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _assemble_report(row: dict[str, Any], summary_block: str) -> str:
+def _assemble_report(
+    row: dict[str, Any],
+    summary_block: str,
+    sanctions_summary: dict[str, Any] | None = None,
+) -> str:
     """Финальная сборка отчёта максимальной ценности (детерминированно + 1 LLM-резюме)."""
     company_name = row.get("company_name") or MISSING
     iin = row.get("iin") or MISSING
 
     snapshot = _build_fact_snapshot(row)
     material = _build_material_facts_block(row)
-    sanctions = _build_sanctions_section(row)
+    sanctions = _build_sanctions_section(row, sanctions_summary)
     courts = _build_courts_section(row)
     structure = _build_structure_section(row)
     individuals = _build_individuals_section(row)
@@ -1932,9 +1972,16 @@ def _build_courts_section(row: dict[str, Any]) -> str:
     return f"{table}\n\n{body}"
 
 
-def _build_sanctions_section(row: dict[str, Any]) -> str:
-    """Раздел «Санкционный анализ»: скрининг + связанные лица с цепочкой связи."""
+def _build_sanctions_section(row: dict[str, Any], readable_summary: dict[str, Any] | None = None) -> str:
+    """Раздел «Санкционный анализ»: скрининг + связанные лица с цепочкой связи.
+
+    Если передан ``readable_summary`` (компактное, расшифрованное LSEG-резюме с
+    ИИ-«сутью») — используем читабельный markdown вместо сырого блока фактов.
+    """
     enriched = row.get("enriched_data") or {}
+    if readable_summary and (readable_summary.get("subjects") or readable_summary.get("coverage")):
+        from app.services.reports.sanctions_summary import build_sanctions_markdown
+        return build_sanctions_markdown(readable_summary)
     facts_block = _build_sanctions_facts_block(row)
     flagged, _total = _collect_sanctioned_related(
         enriched, exclude=_company_identity_keys(row)
@@ -2256,7 +2303,16 @@ async def _generate_full_report_impl(case_id: str, row: dict[str, Any]) -> str:
                 },
             )
 
-    report = _assemble_report(row, summary)
+    # Читабельная санкционная секция (расшифровка кодов + ИИ-«суть», facts-only).
+    sanctions_summary = None
+    try:
+        from app.services.reports.sanctions_summary import build_readable_summary
+
+        sanctions_summary = await build_readable_summary(enriched)
+    except Exception as exc:  # noqa: BLE001 - degrade to the deterministic block
+        logger.warning("readable sanctions summary failed for %s: %s", case_id, exc)
+
+    report = _assemble_report(row, summary, sanctions_summary)
     append_case_event(
         case_id,
         provider="AI",

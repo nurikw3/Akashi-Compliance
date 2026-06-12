@@ -220,6 +220,12 @@ function countHiddenNodes(node: AffiliateTreeNode, expandedIds: Set<string>, lev
   return children.reduce((sum, c) => sum + countHiddenNodes(c, expandedIds, level + 1), 0)
 }
 
+function collectAllIds(node: AffiliateTreeNode, acc: Set<string> = new Set()): Set<string> {
+  acc.add(node.id)
+  for (const c of node.children || []) collectAllIds(c, acc)
+  return acc
+}
+
 function isCompanyBin(iinBin?: string): boolean {
   if (!iinBin) return false
   return iinBin.replace(/\D/g, '').length === 12
@@ -447,6 +453,8 @@ function FlowCanvas({
   fullRoot,
   expandedIds,
   onToggleExpand,
+  onExpandAll,
+  onCollapseAll,
   onSelect,
   onHover,
   onHoverEnd,
@@ -456,6 +464,8 @@ function FlowCanvas({
   fullRoot: AffiliateTreeNode
   expandedIds: Set<string>
   onToggleExpand: (nodeId: string) => void
+  onExpandAll: () => void
+  onCollapseAll: () => void
   onSelect: (node: GraphNode, event: React.MouseEvent) => void
   onHover: (node: GraphNode, event: React.MouseEvent) => void
   onHoverEnd: () => void
@@ -533,6 +543,27 @@ function FlowCanvas({
             className="!bg-white !border !border-neutral-200 !rounded-lg !shadow-sm"
             maskColor="rgba(243, 244, 246, 0.75)"
           />
+          <Panel position="top-left">
+            <div className="flex items-center gap-2">
+              {hiddenTotal > 0 ? (
+                <button
+                  onClick={onExpandAll}
+                  className="text-xs font-medium px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition-colors"
+                  title="Показать все уровни связей сразу"
+                >
+                  Развернуть всё (+{hiddenTotal})
+                </button>
+              ) : (
+                <button
+                  onClick={onCollapseAll}
+                  className="text-xs font-medium px-3 py-1.5 rounded-lg bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 shadow-sm transition-colors"
+                  title="Свернуть до первого уровня"
+                >
+                  Свернуть
+                </button>
+              )}
+            </div>
+          </Panel>
           <Panel position="top-right">
             <FitViewButton />
           </Panel>
@@ -912,6 +943,14 @@ export function AffiliatesGraph({
     })
   }, [])
 
+  const handleExpandAll = useCallback(() => {
+    if (root) setExpandedIds(collectAllIds(root))
+  }, [root])
+
+  const handleCollapseAll = useCallback(() => {
+    setExpandedIds(new Set())
+  }, [])
+
   const handleSelect = useCallback((node: GraphNode, event: React.MouseEvent) => {
     setSelectedNode(node)
     setPopupPosition({ x: event.clientX, y: event.clientY })
@@ -1050,6 +1089,8 @@ export function AffiliatesGraph({
             fullRoot={root}
             expandedIds={expandedIds}
             onToggleExpand={handleToggleExpand}
+            onExpandAll={handleExpandAll}
+            onCollapseAll={handleCollapseAll}
             onSelect={handleSelect}
             onHover={handleHover}
             onHoverEnd={handleHoverEnd}

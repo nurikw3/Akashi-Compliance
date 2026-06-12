@@ -221,6 +221,54 @@ export async function downloadCaseReport(caseId: string, filename: string): Prom
   URL.revokeObjectURL(url)
 }
 
+export function sanctionsSummaryPdfUrl(caseId: string): string {
+  return `${API_URL}/api/cases/${caseId}/sanctions-summary.pdf`
+}
+
+export async function downloadSanctionsSummary(caseId: string, filename: string): Promise<void> {
+  const response = await fetch(sanctionsSummaryPdfUrl(caseId), {
+    headers: getAuthHeader(),
+  })
+  if (response.status === 401) {
+    throw new Error('Unauthorized')
+  }
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || `Не удалось скачать санкционное резюме (${response.status})`)
+  }
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+export function dossierPdfUrl(caseId: string): string {
+  return `${API_URL}/api/cases/${caseId}/dossier.pdf`
+}
+
+export async function downloadDossier(caseId: string, filename: string): Promise<void> {
+  const response = await fetch(dossierPdfUrl(caseId), { headers: getAuthHeader() })
+  if (response.status === 401) throw new Error('Unauthorized')
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || `Не удалось скачать досье (${response.status})`)
+  }
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
 export async function uploadDocument(
   caseId: string,
   filename: string,

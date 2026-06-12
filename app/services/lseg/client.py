@@ -183,7 +183,12 @@ class LsegClient:
     # Public API
     # ------------------------------------------------------------------
 
-    async def screen_sync(self, name: str, entity_type: str) -> dict[str, Any]:
+    async def screen_sync(
+        self,
+        name: str,
+        entity_type: str,
+        secondary_fields: list[dict] | None = None,
+    ) -> dict[str, Any]:
         """Create a WC1 case and screen it synchronously. Returns full case object."""
         payload: dict[str, Any] = {
             "caseId": "",
@@ -193,7 +198,7 @@ class LsegClient:
             "caseScreeningState": {"WATCHLIST": "INITIAL"},
             "name": name,
             "nameTransposition": False,
-            "secondaryFields": [],
+            "secondaryFields": secondary_fields or [],
             "customFields": [],
         }
         return await self._request("POST", f"{_SCREEN_URL}/cases?screen=SYNC", payload)
@@ -214,3 +219,13 @@ class LsegClient:
     async def get_rating(self, case_system_id: str) -> dict[str, Any]:
         """Get the risk rating for a screened case."""
         return await self._request("GET", f"{_SCREEN_URL}/cases/{case_system_id}/rating")
+
+    async def get_profile(self, reference_id: str) -> dict[str, Any]:
+        """Fetch full entity profile via GET /references/records/{referenceId}.
+
+        Returns complete profile including connections (WC1 relationship graph)
+        and any additional fields not present in /results inline data.
+        """
+        return await self._request(
+            "GET", f"{_SCREEN_URL}/references/records/{reference_id}"
+        )
