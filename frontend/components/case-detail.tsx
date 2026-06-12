@@ -2056,6 +2056,8 @@ export function CaseDetail({ caseId }: { caseId: string }) {
   const [focusEntity, setFocusEntity] = useState<string | null>(null)
   const [reportLoading, setReportLoading] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
+  const [dossierLoading, setDossierLoading] = useState(false)
+  const [dossierElapsed, setDossierElapsed] = useState(0)
   const [loadingCase, setLoadingCase] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
 
@@ -2124,6 +2126,23 @@ export function CaseDetail({ caseId }: { caseId: string }) {
       setReportError(e instanceof Error ? e.message : 'Ошибка загрузки PDF')
     } finally {
       setReportLoading(false)
+    }
+  }
+
+  const handleDownloadDossier = async () => {
+    setDossierLoading(true)
+    setDossierElapsed(0)
+    const timer = setInterval(() => setDossierElapsed((s) => s + 1), 1000)
+    try {
+      await downloadDossier(
+        caseData.id,
+        `dossier-${caseData.iinBin || caseData.id.slice(0, 8)}.pdf`,
+      )
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Ошибка выгрузки досье')
+    } finally {
+      clearInterval(timer)
+      setDossierLoading(false)
     }
   }
 
@@ -2199,15 +2218,22 @@ export function CaseDetail({ caseId }: { caseId: string }) {
             </button>
             <button
               type="button"
-              onClick={() =>
-                downloadDossier(caseData.id, `dossier-${caseData.iinBin || caseData.id.slice(0, 8)}.pdf`)
-                  .catch((e) => alert(e instanceof Error ? e.message : 'Ошибка выгрузки досье'))
-              }
-              className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+              onClick={handleDownloadDossier}
+              disabled={dossierLoading}
+              className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-70 text-white text-sm font-medium rounded-lg transition-colors min-w-[180px] justify-center"
               title="Полное досье (реквизиты, налоги, санкции, суды, аффилиаты) в PDF"
             >
-              <FileText className="w-4 h-4" />
-              Полное досье (PDF)
+              {dossierLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Готовлю PDF… {dossierElapsed}с
+                </>
+              ) : (
+                <>
+                  <FileText className="w-4 h-4" />
+                  Полное досье (PDF)
+                </>
+              )}
             </button>
           </div>
         </div>

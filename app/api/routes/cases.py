@@ -392,8 +392,42 @@ async def download_case_report(case_id: str) -> Response:
     )
 
 
+_PDF_CACHE_TTL = 3600  # 1h; key includes a hash of enriched_data → auto-invalidates
+
+
+def _pdf_cache_key(kind: str, case_id: str, enriched: dict[str, Any]) -> str:
+    import hashlib
+    import json as _json
+
+    blob = _json.dumps(enriched, sort_keys=True, ensure_ascii=False, default=str)
+    h = hashlib.md5(blob.encode("utf-8")).hexdigest()[:12]
+    return f"pdf:{kind}:{case_id}:{h}"
+
+
+async def _build_pdf_cached(kind: str, case_id: str, enriched: dict[str, Any], builder, *, fresh: bool):
+    """Return PDF bytes from Redis cache or build+cache. ``builder`` is async → bytes."""
+    import base64
+
+    from app.services.cache import get_cached, set_cached
+
+    key = _pdf_cache_key(kind, case_id, enriched)
+    if not fresh:
+        cached = await get_cached(key)
+        if isinstance(cached, dict) and cached.get("b64"):
+            try:
+                return base64.b64decode(cached["b64"])
+            except Exception:  # noqa: BLE001
+                pass
+    pdf_bytes = await builder(enriched)
+    try:
+        await set_cached(key, {"b64": base64.b64encode(pdf_bytes).decode()}, _PDF_CACHE_TTL)
+    except Exception:  # noqa: BLE001 - cache is best-effort
+        pass
+    return pdf_bytes
+
+
 @router.get("/cases/{case_id}/sanctions-summary.pdf")
-async def download_sanctions_summary(case_id: str) -> Response:
+async def download_sanctions_summary(case_id: str, fresh: bool = False) -> Response:
     """Compact, plain-Russian sanctions summary (КТО/ЧТО/ГДЕ/КОГДА/ПОЧЕМУ) as PDF.
 
     Built from ``enriched_data`` LSEG sections. Abbreviations decoded; one short
@@ -411,9 +445,11 @@ async def download_sanctions_summary(case_id: str) -> Response:
         except ValueError:
             enriched = {}
 
-    summary = await build_readable_summary(enriched)
+    async def _build(enr: dict[str, Any]) -> bytes:
+        return render_sanctions_pdf(await build_readable_summary(enr))
+
     try:
-        pdf_bytes = render_sanctions_pdf(summary)
+        pdf_bytes = await _build_pdf_cached("sanctions", case_id, enriched, _build, fresh=fresh)
     except Exception as exc:  # noqa: BLE001 - surface render failures to caller
         raise HTTPException(status_code=500, detail=f"PDF render failed: {exc}") from exc
 
@@ -426,7 +462,7 @@ async def download_sanctions_summary(case_id: str) -> Response:
 
 
 @router.get("/cases/{case_id}/dossier.pdf")
-async def download_dossier(case_id: str) -> Response:
+async def download_dossier(case_id: str, fresh: bool = False) -> Response:
     """Full facts-only counterparty dossier (Adata + LSEG) as a styled PDF.
 
     Sections: Реквизиты · Налоги · Санкции/PEP · Судебные дела · Аффилиаты.
@@ -445,9 +481,11 @@ async def download_dossier(case_id: str) -> Response:
         except ValueError:
             enriched = {}
 
-    dossier = await build_dossier(enriched)
+    async def _build(enr: dict[str, Any]) -> bytes:
+        return render_dossier_pdf(await build_dossier(enr))
+
     try:
-        pdf_bytes = render_dossier_pdf(dossier)
+        pdf_bytes = await _build_pdf_cached("dossier", case_id, enriched, _build, fresh=fresh)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"PDF render failed: {exc}") from exc
 

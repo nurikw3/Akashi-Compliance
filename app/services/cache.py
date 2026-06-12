@@ -24,7 +24,7 @@ def _get_client() -> aioredis.Redis:
     if _client is None:
         _client = aioredis.from_url(
             settings.redis_url,
-            socket_connect_timeout=2,
+            socket_connect_timeout=5,
             decode_responses=True,
         )
     return _client
