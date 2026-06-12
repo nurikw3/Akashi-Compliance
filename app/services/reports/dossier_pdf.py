@@ -139,13 +139,24 @@ def _render_courts(pdf: FPDF, courts: dict) -> None:
         counts.append(f"завершённых: {courts['completedCases']}")
     counts.append(f"сумма исков: {courts.get('totalAmount', '0 ₸')}")
     _kv(pdf, "Итого:", " · ".join(counts))
-    if courts.get("note"):
-        _p(pdf, courts["note"], size=8.4, color=_MUTED)
-    items = courts.get("items") or []
-    if items:
-        _section_label(pdf, f"Дела {courts.get('scope', 'компании')} (по-человечески)")
-        for it in items:
+
+    company_items = courts.get("companyItems") or []
+    director_items = courts.get("directorItems") or []
+
+    if company_items:
+        _section_label(pdf, "Дела компании")
+        for it in company_items:
             _render_court_case(pdf, it)
+    else:
+        _p(pdf, "У компании отдельных судебных дел не найдено.", size=8.4, color=_MUTED)
+
+    if director_items:
+        _section_label(pdf, f"Дела руководителя ({courts.get('directorName', '')})")
+        for it in director_items:
+            _render_court_case(pdf, it)
+
+    for o in courts.get("otherIndividuals") or []:
+        _p(pdf, f"○ {o['name']}: судебных дел — {o['count']}", size=7.8, color=_MUTED)
 
 
 def _render_court_case(pdf: FPDF, it: dict, *, compact: bool = False) -> None:

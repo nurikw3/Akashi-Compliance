@@ -393,6 +393,7 @@ async def download_case_report(case_id: str) -> Response:
 
 
 _PDF_CACHE_TTL = 3600  # 1h; key includes a hash of enriched_data → auto-invalidates
+_PDF_RENDER_VERSION = "v3"  # bump when PDF rendering/builders change → invalidates old cache
 
 
 def _pdf_disposition(prefix: str, row: dict[str, Any], case_id: str) -> dict[str, str]:
@@ -420,7 +421,7 @@ def _pdf_cache_key(kind: str, case_id: str, enriched: dict[str, Any]) -> str:
 
     blob = _json.dumps(enriched, sort_keys=True, ensure_ascii=False, default=str)
     h = hashlib.md5(blob.encode("utf-8")).hexdigest()[:12]
-    return f"pdf:{kind}:{case_id}:{h}"
+    return f"pdf:{_PDF_RENDER_VERSION}:{kind}:{case_id}:{h}"
 
 
 async def _build_pdf_cached(kind: str, case_id: str, enriched: dict[str, Any], builder, *, fresh: bool):

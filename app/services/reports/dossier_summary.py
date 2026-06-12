@@ -149,33 +149,39 @@ def _build_courts(enriched: dict) -> dict | None:
     courts = en.get("courts") or {}
     info = en.get("companyInfo") or {}
     director_iin = str(info.get("director_iin") or "")
-    individual_courts = enriched.get("individualCourts") or {}
-
     director_name = str(info.get("director") or "")
-    items: list[dict] = []
-    # Детальные дела директора (если есть), иначе сводные дела из courts.cases
-    director_cases = individual_courts.get(director_iin) if isinstance(individual_courts, dict) else None
-    if isinstance(director_cases, list) and director_cases:
-        items = [_court_item(c, director_name) for c in director_cases[:8] if isinstance(c, dict)]
-    else:
-        items = [_court_item(c) for c in (courts.get("cases") or [])[:8] if isinstance(c, dict)]
+    individual_courts = enriched.get("individualCourts") or {}
+    # ДЕТАЛЬНЫЕ дела компании (с номерами/судами/категориями — как в UI),
+    # НЕ годовые сводки enrichment.courts.cases.
+    company_cases = enriched.get("companyCourtCases") or []
 
-    # прочие физлица с делами
+    company_items = [_court_item(c, "") for c in company_cases[:10] if isinstance(c, dict)]
+
+    director_cases = individual_courts.get(director_iin) if isinstance(individual_courts, dict) else None
+    director_items = (
+        [_court_item(c, director_name) for c in director_cases[:10] if isinstance(c, dict)]
+        if isinstance(director_cases, list) and director_cases else []
+    )
+
+    # прочие связанные физлица с делами (кроме директора)
     other_with_cases = []
     if isinstance(individual_courts, dict):
+        meta = enriched.get("individualCourtsMeta") or {}
         for iin, lst in individual_courts.items():
             if iin != director_iin and isinstance(lst, list) and lst:
-                other_with_cases.append({"iin": iin, "count": len(lst)})
+                nm = (meta.get(iin) or {}).get("name") or f"ИИН {iin}"
+                other_with_cases.append({"name": nm, "count": len(lst)})
 
-    if not (courts or items):
+    if not (courts or company_items or director_items):
         return None
     return {
-        "scope": "руководителя" if str(courts.get("scope")) == "director" else "компании",
         "note": _str(courts, "note"),
         "activeCases": courts.get("activeCases"),
         "completedCases": courts.get("completedCases"),
         "totalAmount": _money(courts.get("totalAmount")) if courts.get("totalAmount") else "0 ₸",
-        "items": items,
+        "companyItems": company_items,
+        "directorName": director_name,
+        "directorItems": director_items,
         "otherIndividuals": other_with_cases,
     }
 
@@ -328,8 +334,9 @@ async def build_dossier(enriched: dict[str, Any]) -> dict[str, Any]:
     # Собираем ВСЕ судебные дела (основной директор + директора аффилиатов) в один
     # батч ИИ-разбора, затем раскладываем «о чём / роль / итог» обратно.
     all_items: list[dict] = []
-    if courts and courts.get("items"):
-        all_items.extend(courts["items"])
+    if courts:
+        all_items.extend(courts.get("companyItems") or [])
+        all_items.extend(courts.get("directorItems") or [])
     for aff in affiliates.get("detailed") or []:
         all_items.extend(aff.get("directorCourtItems") or [])
 

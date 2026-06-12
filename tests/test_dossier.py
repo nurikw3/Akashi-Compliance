@@ -30,6 +30,11 @@ def _enriched() -> dict:
             {"number": "7528-16", "type": "Административное дело", "date": "2016-09-15",
              "court": "СМАС Алматы", "result": "Дело закрыто", "category": "ст.610"},
         ]},
+        "companyCourtCases": [
+            {"number": "7517-21-00-2/6609", "type": "Гражданское дело", "date": "2021-12-14",
+             "court": "Медеуский районный суд", "role": "Третья сторона",
+             "result": "Дело не определено", "category": "ТРУДОВЫЕ СПОРЫ"},
+        ],
     }
 
 
@@ -45,10 +50,11 @@ def test_dossier_sections_built() -> None:
     assert d["company"]["bin"] == "220840001616"
     assert d["taxes"]["status"] == "нет задолженности"
     assert d["taxes"]["totalPaid"] == "1 356 330 745 ₸"
-    # courts: director's detailed cases surfaced
-    assert d["courts"]["scope"] == "руководителя"
-    assert len(d["courts"]["items"]) == 1
-    assert d["courts"]["items"][0]["date"] == "2016-09-15"
+    # courts: DETAILED company cases (companyCourtCases) + director cases — not yearly summaries
+    assert len(d["courts"]["companyItems"]) == 1
+    assert d["courts"]["companyItems"][0]["number"] == "7517-21-00-2/6609"
+    assert len(d["courts"]["directorItems"]) == 1
+    assert d["courts"]["directorItems"][0]["date"] == "2016-09-15"
     assert d["affiliates"]["companiesCount"] == 1
     assert "sanctions" in d
 
