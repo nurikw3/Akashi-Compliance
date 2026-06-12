@@ -34,7 +34,7 @@ import { dataSourceLabel, sectionSource } from '@/lib/data-source-label'
 import { resolveSectionSource } from '@/lib/source-ref'
 import { Abbr } from '@/components/ui/abbr'
 import { SourceRef } from '@/components/ui/source-ref'
-import { caseDisplayName, formatPersonField } from '@/lib/case-display'
+import { caseDisplayName, formatPersonField, pdfFileName } from '@/lib/case-display'
 import type { Case, DataSourceKind, DataSources, LsegData, LsegSanctionHit, LsegExtendedEntity, IndividualCourtCase, VerificationLogEvent, OsintData, OsintFinding, OsintCategory } from '@/lib/types'
 
 type Tab = 'data' | 'documents' | 'assessment' | 'chat' | 'lseg' | 'osint' | 'log'
@@ -1521,7 +1521,7 @@ function LsegTab({ caseData, focusEntity }: { caseData: Case; focusEntity?: stri
                 onClick={() =>
                   downloadSanctionsSummary(
                     caseData.id,
-                    `sanctions-summary-${caseData.id.slice(0, 8)}.pdf`,
+                    pdfFileName('Санкции_' + caseDisplayName(caseData), caseData.iinBin, caseData.id.slice(0, 8)),
                   ).catch((e) => alert(e instanceof Error ? e.message : 'Ошибка выгрузки'))
                 }
                 className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-neutral-200 hover:bg-neutral-50 transition-colors"
@@ -2136,7 +2136,7 @@ export function CaseDetail({ caseId }: { caseId: string }) {
     try {
       await downloadDossier(
         caseData.id,
-        `dossier-${caseData.iinBin || caseData.id.slice(0, 8)}.pdf`,
+        pdfFileName(displayName, caseData.iinBin, caseData.id.slice(0, 8)),
       )
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Ошибка выгрузки досье')

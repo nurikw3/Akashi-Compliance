@@ -395,6 +395,25 @@ async def download_case_report(case_id: str) -> Response:
 _PDF_CACHE_TTL = 3600  # 1h; key includes a hash of enriched_data → auto-invalidates
 
 
+def _pdf_disposition(prefix: str, row: dict[str, Any], case_id: str) -> dict[str, str]:
+    """Content-Disposition for `Название_ИИН.pdf` (RFC 5987 for Cyrillic + ASCII fallback)."""
+    import re
+    import urllib.parse
+
+    name = str(row.get("company_name") or "").strip()
+    iin = str(row.get("iin") or "").strip()
+    safe = re.sub(r'[\\/:*?"<>|«»\'\n\r\t]+', "", name)
+    safe = re.sub(r"\s+", "_", safe).strip("_")[:80]
+    full = f"{safe}_{iin}.pdf" if safe else f"{prefix}-{iin or case_id[:8]}.pdf"
+    ascii_fallback = f"{prefix}-{iin or case_id[:8]}.pdf"
+    return {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_fallback}"; '
+            f"filename*=UTF-8''{urllib.parse.quote(full)}"
+        )
+    }
+
+
 def _pdf_cache_key(kind: str, case_id: str, enriched: dict[str, Any]) -> str:
     import hashlib
     import json as _json
@@ -453,11 +472,10 @@ async def download_sanctions_summary(case_id: str, fresh: bool = False) -> Respo
     except Exception as exc:  # noqa: BLE001 - surface render failures to caller
         raise HTTPException(status_code=500, detail=f"PDF render failed: {exc}") from exc
 
-    filename = f"sanctions-summary-{case_id[:8]}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=_pdf_disposition("sanctions", row, case_id),
     )
 
 
@@ -489,11 +507,10 @@ async def download_dossier(case_id: str, fresh: bool = False) -> Response:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"PDF render failed: {exc}") from exc
 
-    filename = f"dossier-{case_id[:8]}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=_pdf_disposition("dossier", row, case_id),
     )
 
 

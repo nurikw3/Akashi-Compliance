@@ -32,3 +32,15 @@ export function caseDisplayName(caseData: Pick<Case, 'name' | 'iinBin' | 'enrich
   }
   return fromEnrichment || name || `БИН ${caseData.iinBin}`
 }
+
+/** Имя PDF-файла вида `Название_ИИН.pdf` (чистит недопустимые в именах символы). */
+export function pdfFileName(name: string, iin?: string, fallbackId = ''): string {
+  const safe = (name || '')
+    .replace(/[\/\\:*?"<>|«»“”'`]+/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 80)
+  const id = (iin || fallbackId || '').trim()
+  return safe ? `${safe}_${id}.pdf` : `${id || 'report'}.pdf`
+}
