@@ -135,7 +135,7 @@ async def _generate_queries(subjects: list[dict[str, Any]]) -> list[dict[str, An
                 {"role": "user", "content": user_payload},
             ],
             temperature=0.2,
-            max_tokens=1600,
+            max_tokens=4000,
             response_format={"type": "json_object"},
         )
         raw = _strip_code_fence(response.choices[0].message.content or "")
